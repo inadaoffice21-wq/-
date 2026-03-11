@@ -47,44 +47,32 @@ class Store {
 
         try {
             const saved = this.isStorageAvailable ? localStorage.getItem(this.STORAGE_KEY) : null;
-            if (!saved) return this._pruneOldData(initialState);
-            
+            if (!saved) return initialState; // 枝刈りなしで返す
+
             const state = JSON.parse(saved);
-            // 必須プロパティの存在チェック
-            if (!state || typeof state !== 'object' || !Array.isArray(state.users) || !Array.isArray(state.timeEntries)) {
-                console.warn('Invalid state structure found, resetting to initial state.');
-                return this._pruneOldData(initialState);
-            }
-            return this._pruneOldData(state);
+            
+            // 壊滅的な破損でない限り、既存のデータを優先する
+            if (!state || typeof state !== 'object') return initialState;
+
+            // 必須プロパティが欠けている場合のみ補完する（全リセットは避ける）
+            const mergedState = { ...initialState, ...state };
+            
+            // 配列であるべきプロパティのチェック
+            ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
+                if (!Array.isArray(mergedState[key])) {
+                    mergedState[key] = initialState[key];
+                }
+            });
+
+            return mergedState;
         } catch (e) {
             console.error('Failed to load state from localStorage:', e);
-            return this._pruneOldData(initialState);
+            return initialState;
         }
     }
 
     _pruneOldData(state) {
-        if (!state || !Array.isArray(state.timeEntries)) return state;
-
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-
-        const initialCount = state.timeEntries.length;
-        state.timeEntries = state.timeEntries.filter(entry => {
-            const entryDate = new Date(entry.createdAt);
-            return !isNaN(entryDate) && entryDate >= oneMonthAgo;
-        });
-
-        if (state.timeEntries.length < initialCount) {
-            console.log(`Pruned ${initialCount - state.timeEntries.length} old entries.`);
-        }
-        
-        if (Array.isArray(state.auditLogs)) {
-            state.auditLogs = state.auditLogs.filter(log => {
-                const logDate = new Date(log.timestamp);
-                return !isNaN(logDate) && logDate >= oneMonthAgo;
-            });
-        }
-        
+        // データ永続化のため、自動削除機能は無効化されました。
         return state;
     }
 
