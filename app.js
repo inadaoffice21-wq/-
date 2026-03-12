@@ -9,6 +9,8 @@ class Store {
     constructor() {
         this.STORAGE_KEY = 'tt_pro_data';
         this.isStorageAvailable = this._checkStorageAvailable();
+        this.storageStatus = { available: this.isStorageAvailable, persistent: false, estimate: 0 };
+        this._checkPersistence();
         this.state = this._load();
     }
 
@@ -19,8 +21,18 @@ class Store {
             localStorage.removeItem(testKey);
             return true;
         } catch (e) {
-            console.warn('LocalStorage is not available, using in-memory storage.');
+            console.warn('LocalStorage is not available:', e);
             return false;
+        }
+    }
+
+    async _checkPersistence() {
+        if (navigator.storage && navigator.storage.persist) {
+            this.storageStatus.persistent = await navigator.storage.persisted();
+            if (navigator.storage.estimate) {
+                const estimate = await navigator.storage.estimate();
+                this.storageStatus.estimate = estimate.usage;
+            }
         }
     }
 
@@ -82,8 +94,49 @@ class Store {
                 localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.state));
             } catch (e) {
                 console.error('Failed to save to localStorage:', e);
+                // 容量不足などで保存できない場合に警告
+                if (e.name === 'QuotaExceededError') {
+                    alert('ブラウザの保存容量がいっぱいです。不要なデータを整理するか、データをエクスポートしてください。');
+                } else {
+                    alert('データの保存に失敗しました。ページをリロードせずに、データをエクスポートしてバックアップをとってください。');
+                }
             }
         }
+    }
+
+    exportData() {
+        const dataStr = JSON.stringify(this.state, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `timetracking_backup_${new Date().toISOString().split('T')[0]}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+    importData(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (imported && typeof imported === 'object') {
+                        // データのマージではなく上書き（破壊的だが確実）
+                        if (confirm('現在のデータが上書きされます。よろしいですか？')) {
+                            this.state = { ...this.state, ...imported };
+                            this._save();
+                            resolve(true);
+                        } else {
+                            resolve(false);
+                        }
+                    }
+                } catch (err) {
+                    reject('ファイル形式が正しくありません。');
+                }
+            };
+            reader.readAsText(file);
+        });
     }
 
     login(email, password) {
@@ -170,6 +223,10 @@ const Views = {
                     </div>
                     <button type="submit" class="btn btn-primary" style="width: 100%;">ログイン</button>
                 </form>
+                <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center;">
+                    <button id="import-btn" class="btn" style="font-size: 0.875rem; color: var(--text-secondary);">バックアップから復元</button>
+                    <input type="file" id="import-file" style="display: none;" accept=".json">
+                </div>
             </div>
         `;
         const form = container.querySelector('#login-form');
@@ -181,6 +238,22 @@ const Views = {
                 container.querySelector('#login-error').style.display = 'block';
             }
         });
+
+        const importBtn = container.querySelector('#import-btn');
+        const fileInput = container.querySelector('#import-file');
+        importBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async (e) => {
+            if (e.target.files.length > 0) {
+                try {
+                    await store.importData(e.target.files[0]);
+                    alert('復元が完了しました。');
+                    location.reload();
+                } catch (err) {
+                    alert(err);
+                }
+            }
+        });
+
         return container;
     },
 
@@ -252,9 +325,25 @@ const Views = {
             container.querySelector('#share-btn').addEventListener('click', () => {
                 const url = window.location.href.split('#')[0];
                 navigator.clipboard.writeText(url).then(() => {
-                    alert('サイトのURLをコピーしました！ネットリフトなどにアップロードして共有してください。');
+                    const msg = `サイトのURLをコピーしました！利用中のURL: ${url}\n\n【重要】別のURL（ブランチ毎のプレビュー等）で開くとデータが引き継がれません。常にこのURLで開くようにしてください。`;
+                    alert(msg);
                 });
             });
+
+            // 診断UIの追加
+            const nav = container.querySelector('.navbar');
+            const diagBtn = document.createElement('button');
+            diagBtn.className = 'btn';
+            diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
+            diagBtn.textContent = 'データ診断/バックアップ';
+            diagBtn.onclick = () => {
+                const s = store.storageStatus;
+                const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
+                if (confirm(msg)) {
+                    store.exportData();
+                }
+            };
+            nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
 
             container.querySelector('#time-entry-form').addEventListener('submit', (e) => {
                 e.preventDefault();
@@ -352,9 +441,25 @@ const Views = {
             container.querySelector('#share-btn').addEventListener('click', () => {
                 const url = window.location.href.split('#')[0];
                 navigator.clipboard.writeText(url).then(() => {
-                    alert('サイトのURLをコピーしました！ネットリフトなどにアップロードして共有してください。');
+                    const msg = `サイトのURLをコピーしました！利用中のURL: ${url}\n\n【重要】別のURL（ブランチ毎のプレビュー等）で開くとデータが引き継がれません。常にこのURLで開くようにしてください。`;
+                    alert(msg);
                 });
             });
+
+            // 診断UIの追加
+            const nav = container.querySelector('.navbar');
+            const diagBtn = document.createElement('button');
+            diagBtn.className = 'btn';
+            diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
+            diagBtn.textContent = 'データ診断/バックアップ';
+            diagBtn.onclick = () => {
+                const s = store.storageStatus;
+                const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
+                if (confirm(msg)) {
+                    store.exportData();
+                }
+            };
+            nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
 
             if (activeTab === 'approvals') {
                 container.querySelectorAll('.approve-btn').forEach(btn => btn.addEventListener('click', () => { store.updateTimeEntry(btn.dataset.id, { status: 'approved' }); store.logAction('APPROVE', `Approved: ${btn.dataset.id}`); render(); }));
