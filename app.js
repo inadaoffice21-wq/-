@@ -37,6 +37,7 @@ class Store {
     }
 
     _load() {
+        console.log('[Store] Loading state...');
         const initialState = {
             currentUser: null,
             users: [
@@ -59,26 +60,36 @@ class Store {
 
         try {
             const saved = this.isStorageAvailable ? localStorage.getItem(this.STORAGE_KEY) : null;
-            if (!saved) return initialState; // 枝刈りなしで返す
+            if (!saved) {
+                console.log('[Store] No saved state found, using initial.');
+                return initialState;
+            }
 
             const state = JSON.parse(saved);
             
-            // 壊滅的な破損でない限り、既存のデータを優先する
-            if (!state || typeof state !== 'object') return initialState;
+            if (!state || typeof state !== 'object') {
+                console.error('[Store] Saved state is invalid type, resetting.');
+                return initialState;
+            }
 
-            // 必須プロパティが欠けている場合のみ補完する（全リセットは避ける）
+            // currentUser の型チェック（稀に文字列が入ることがあるため）
+            if (state.currentUser && (typeof state.currentUser !== 'object' || !state.currentUser.id)) {
+                console.warn('[Store] Invalid currentUser format detected, resetting user state.');
+                state.currentUser = null;
+            }
+
             const mergedState = { ...initialState, ...state };
             
-            // 配列であるべきプロパティのチェック
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
                     mergedState[key] = initialState[key];
                 }
             });
 
+            console.log('[Store] State loaded successfully.');
             return mergedState;
         } catch (e) {
-            console.error('Failed to load state from localStorage:', e);
+            console.error('[Store] Failed to load state from localStorage:', e);
             return initialState;
         }
     }
@@ -150,6 +161,17 @@ class Store {
         return false;
     }
 
+    updatePassword(userId, newPassword) {
+        const user = this.state.users.find(u => u.id === userId);
+        if (user) {
+            user.password = newPassword;
+            this.logAction('UPDATE_PASSWORD', `User: ${user.email}`);
+            this._save();
+            return true;
+        }
+        return false;
+    }
+
     logout() {
         this.state.currentUser = null;
         this._save();
@@ -170,6 +192,21 @@ class Store {
         this.logAction('CREATE_ENTRY', `Entry added: ${newEntry.id}`);
         this._save();
         return newEntry;
+    }
+
+    deleteTimeEntry(id) {
+        const index = this.state.timeEntries.findIndex(e => e.id === id);
+        if (index !== -1) {
+            const entry = this.state.timeEntries[index];
+            if (entry.status === 'approved' || entry.status === 'submitted') {
+                return false;
+            }
+            this.state.timeEntries.splice(index, 1);
+            this.logAction('DELETE_ENTRY', `Entry deleted: ${id}`);
+            this._save();
+            return true;
+        }
+        return false;
     }
 
     updateTimeEntry(id, updates) {
@@ -273,6 +310,7 @@ const Views = {
                     <h1 class="brand">TimeTracking Pro</h1>
                     <div style="display: flex; align-items: center; gap: 1rem;">
                         <button class="btn" id="share-btn" style="background: rgba(99, 102, 241, 0.1); color: var(--primary); font-size: 0.875rem;">URLを共有</button>
+                        <button class="btn" id="pw-change-btn" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;">パスワード変更</button>
                         <span>${user.name}さん</span>
                         <button class="btn" id="logout-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">ログアウト</button>
                     </div>
@@ -305,7 +343,7 @@ const Views = {
                 const p = store.state.projects.find(proj => proj.id === e.projectId);
                 const statusColor = e.status === 'approved' ? 'var(--success)' : (e.status === 'rejected' ? 'var(--danger)' : 'var(--warning)');
                 const isLocked = e.status === 'approved' || e.status === 'submitted';
-                return `<tr style="border-bottom: 1px solid var(--border);"><td style="padding: 1rem;">${new Date(e.createdAt).toLocaleDateString()}</td><td style="padding: 1rem;">${p ? p.name : '?'}</td><td style="padding: 1rem;">${e.hours}h</td><td style="padding: 1rem;">${e.description}</td><td style="padding: 1rem;"><span style="color: ${statusColor};">${e.status}</span></td><td style="padding: 1rem;">${isLocked ? '' : `<button class="btn edit-btn" data-id="${e.id}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background: var(--bg-input);">修正</button>`}</td></tr>`;
+                return `<tr style="border-bottom: 1px solid var(--border);"><td style="padding: 1rem;">${new Date(e.createdAt).toLocaleDateString()}</td><td style="padding: 1rem;">${p ? p.name : '?'}</td><td style="padding: 1rem;">${e.hours}h</td><td style="padding: 1rem;">${e.description}</td><td style="padding: 1rem;"><span style="color: ${statusColor};">${e.status}</span></td><td style="padding: 1rem; display: flex; gap: 0.5rem;">${isLocked ? '' : `<button class="btn edit-btn" data-id="${e.id}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background: var(--bg-input);">修正</button><button class="btn delete-btn" data-id="${e.id}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background: rgba(239, 68, 68, 0.1); color: var(--danger);">削除</button>`}</td></tr>`;
             }).join('')}</tbody>
                                 </table>
                             </div>
@@ -330,20 +368,23 @@ const Views = {
                 });
             });
 
-            // 診断UIの追加
+            // 診断UIの追加（重複防止）
             const nav = container.querySelector('.navbar');
-            const diagBtn = document.createElement('button');
-            diagBtn.className = 'btn';
-            diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
-            diagBtn.textContent = 'データ診断/バックアップ';
-            diagBtn.onclick = () => {
-                const s = store.storageStatus;
-                const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
-                if (confirm(msg)) {
-                    store.exportData();
-                }
-            };
-            nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+            if (!nav.querySelector('#diag-btn')) {
+                const diagBtn = document.createElement('button');
+                diagBtn.id = 'diag-btn';
+                diagBtn.className = 'btn';
+                diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
+                diagBtn.textContent = 'データ診断/バックアップ';
+                diagBtn.onclick = () => {
+                    const s = store.storageStatus;
+                    const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
+                    if (confirm(msg)) {
+                        store.exportData();
+                    }
+                };
+                nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+            }
 
             container.querySelector('#time-entry-form').addEventListener('submit', (e) => {
                 e.preventDefault();
@@ -367,6 +408,29 @@ const Views = {
                         render();
                     }
                 });
+            });
+
+            container.querySelectorAll('.delete-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (confirm('この記録を削除してもよろしいですか？')) {
+                        if (store.deleteTimeEntry(btn.dataset.id)) {
+                            render();
+                        } else {
+                            alert('承認済みまたは提出済みの記録は削除できません。');
+                        }
+                    }
+                });
+            });
+
+            container.querySelector('#pw-change-btn').addEventListener('click', () => {
+                const newPw = prompt('新しいパスワードを入力してください');
+                if (newPw && newPw.length >= 4) {
+                    if (store.updatePassword(user.id, newPw)) {
+                        alert('パスワードを変更しました。次回ログイン時から有効になります。');
+                    }
+                } else if (newPw) {
+                    alert('パスワードは4文字以上で入力してください。');
+                }
             });
 
             const trackerBtn = container.querySelector('#tracker-btn');
@@ -446,20 +510,23 @@ const Views = {
                 });
             });
 
-            // 診断UIの追加
+            // 診断UIの追加（重複防止）
             const nav = container.querySelector('.navbar');
-            const diagBtn = document.createElement('button');
-            diagBtn.className = 'btn';
-            diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
-            diagBtn.textContent = 'データ診断/バックアップ';
-            diagBtn.onclick = () => {
-                const s = store.storageStatus;
-                const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
-                if (confirm(msg)) {
-                    store.exportData();
-                }
-            };
-            nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+            if (!nav.querySelector('#diag-btn')) {
+                const diagBtn = document.createElement('button');
+                diagBtn.id = 'diag-btn';
+                diagBtn.className = 'btn';
+                diagBtn.style.cssText = 'background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;';
+                diagBtn.textContent = 'データ診断/バックアップ';
+                diagBtn.onclick = () => {
+                    const s = store.storageStatus;
+                    const msg = `【ストレージ診断】\n・保存機能: ${s.available ? 'OK' : 'エラー'}\n・永続化: ${s.persistent ? '許可済み' : 'ブラウザにより制限'}\n・現在の使用量: ${Math.round(s.estimate / 1024)} KB\n\n【データ保護】\n1日で消える場合は、ブラウザの設定で「終了時にCookieやデータを消去」が有効になっていないか確認してください。\n\n現在のデータをバックアップとしてダウンロードしますか？`;
+                    if (confirm(msg)) {
+                        store.exportData();
+                    }
+                };
+                nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+            }
 
             if (activeTab === 'approvals') {
                 container.querySelectorAll('.approve-btn').forEach(btn => btn.addEventListener('click', () => { store.updateTimeEntry(btn.dataset.id, { status: 'approved' }); store.logAction('APPROVE', `Approved: ${btn.dataset.id}`); render(); }));
@@ -640,23 +707,50 @@ class App {
     }
 
     route() {
-        const user = store.getCurrentUser();
-        // Clean up hash to get path
-        let path = window.location.hash.replace(/^#/, '') || '/';
-        if (path === '') path = '/';
-        if (!path.startsWith('/')) path = '/' + path;
+        console.log('[App] Routing to:', window.location.hash || '/');
         
-        this.lastHash = window.location.hash; // Sync lastHash
+        // ローダーを非表示にする（確実な実行）
+        const loader = document.getElementById('initial-loader');
+        if (loader) loader.style.display = 'none';
 
-        if (!user && path !== '/login') { this.navigate('/login'); return; }
-        if (user && path === '/login') { this.navigate('/'); return; }
+        try {
+            const user = store.getCurrentUser();
+            let path = window.location.hash.replace(/^#/, '') || '/';
+            if (path === '') path = '/';
+            if (!path.startsWith('/')) path = '/' + path;
+            
+            this.lastHash = window.location.hash;
 
-        let view;
-        if (path === '/login') view = Views.login();
-        else if (user.role === 'admin') view = Views.admin();
-        else view = Views.dashboard();
+            if (!user && path !== '/login') { 
+                console.log('[App] No user, redirecting to /login');
+                this.navigate('/login'); 
+                return; 
+            }
+            if (user && path === '/login') { 
+                this.navigate('/'); 
+                return; 
+            }
 
-        this.render(view);
+            let view;
+            if (path === '/login') {
+                view = Views.login();
+            } else if (user && user.role === 'admin') {
+                view = Views.admin();
+            } else if (user) {
+                view = Views.dashboard();
+            } else {
+                this.navigate('/login');
+                return;
+            }
+
+            this.render(view);
+        } catch (err) {
+            console.error('[App] Routing error:', err);
+            // 致命的なエラー時はログイン画面に強制送還
+            if (window.location.hash !== '#/login') {
+                window.location.hash = '/login';
+            }
+        }
     }
 
     navigate(path) {
