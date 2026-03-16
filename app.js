@@ -177,6 +177,17 @@ class Store {
         return false;
     }
 
+    register(name, email, password) {
+        if (this.state.users.find(u => u.email === email)) {
+            return { success: false, message: 'このメールアドレスは既に登録されています。' };
+        }
+        const newUser = { id: 'u' + Date.now(), name, email, password, role: 'user' };
+        this.state.users.push(newUser);
+        this.logAction('REGISTER_USER', `Registered: ${email}`);
+        this._save();
+        return { success: true, user: newUser };
+    }
+
     updatePassword(userId, newPassword) {
         const user = this.state.users.find(u => u.id === userId);
         if (user) {
@@ -260,9 +271,13 @@ const Views = {
             <div class="glass" style="width: 100%; max-width: 400px; padding: 2.5rem;">
                 <div style="text-align: center; margin-bottom: 2rem;">
                     <h1 class="brand" style="font-size: 2rem; margin-bottom: 0.5rem;">TimeTracking Pro</h1>
-                    <p style="color: var(--text-secondary);">ログインして工数を管理しましょう</p>
+                    <p id="form-subtitle" style="color: var(--text-secondary);">ログインして工数を管理しましょう</p>
                 </div>
-                <form id="login-form">
+                <form id="auth-form">
+                    <div id="name-group" class="input-group" style="display: none;">
+                        <label for="name">名前</label>
+                        <input type="text" id="name" class="input-field" placeholder="山田 太郎">
+                    </div>
                     <div class="input-group">
                         <label for="email">メールアドレス</label>
                         <input type="email" id="email" class="input-field" placeholder="example@example.com" required>
@@ -271,10 +286,11 @@ const Views = {
                         <label for="password">パスワード</label>
                         <input type="password" id="password" class="input-field" placeholder="••••••••" required>
                     </div>
-                    <div id="login-error" style="color: var(--danger); font-size: 0.875rem; margin-bottom: 1rem; display: none;">
-                        メールアドレスまたはパスワードが正しくありません。
+                    <div id="auth-error" style="color: var(--danger); font-size: 0.875rem; margin-bottom: 1rem; display: none;"></div>
+                    <button type="submit" id="submit-btn" class="btn btn-primary" style="width: 100%;">ログイン</button>
+                    <div style="text-align: center; margin-top: 1rem;">
+                        <button type="button" id="toggle-mode-btn" class="btn" style="background: none; color: var(--primary); font-size: 0.875rem; padding: 0;">新規登録はこちら</button>
                     </div>
-                    <button type="submit" class="btn btn-primary" style="width: 100%;">ログイン</button>
                 </form>
                 <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center;">
                     <button id="import-btn" class="btn" style="font-size: 0.875rem; color: var(--text-secondary);">バックアップから復元</button>
@@ -282,13 +298,58 @@ const Views = {
                 </div>
             </div>
         `;
-        const form = container.querySelector('#login-form');
+        const form = container.querySelector('#auth-form');
+        const nameGroup = container.querySelector('#name-group');
+        const submitBtn = container.querySelector('#submit-btn');
+        const switchBtn = container.querySelector('#toggle-mode-btn');
+        const subtitle = container.querySelector('#form-subtitle');
+        const authError = container.querySelector('#auth-error');
+        
+        let isLoginMode = true;
+
+        switchBtn.addEventListener('click', () => {
+            isLoginMode = !isLoginMode;
+            authError.style.display = 'none';
+            if (isLoginMode) {
+                nameGroup.style.display = 'none';
+                form.name.required = false;
+                submitBtn.textContent = 'ログイン';
+                switchBtn.textContent = '新規登録はこちら';
+                subtitle.textContent = 'ログインして工数を管理しましょう';
+            } else {
+                nameGroup.style.display = 'block';
+                form.name.required = true;
+                submitBtn.textContent = '登録してログイン';
+                switchBtn.textContent = 'ログイン画面に戻る';
+                subtitle.textContent = '新しいアカウントを作成します';
+            }
+        });
+
         form.addEventListener('submit', (e) => {
             e.preventDefault();
-            if (store.login(form.email.value, form.password.value)) {
-                app.navigate('/');
+            authError.style.display = 'none';
+            
+            if (isLoginMode) {
+                if (store.login(form.email.value, form.password.value)) {
+                    app.navigate('/');
+                } else {
+                    authError.textContent = 'メールアドレスまたはパスワードが正しくありません。';
+                    authError.style.display = 'block';
+                }
             } else {
-                container.querySelector('#login-error').style.display = 'block';
+                if (!form.name.value) {
+                    authError.textContent = '名前を入力してください。';
+                    authError.style.display = 'block';
+                    return;
+                }
+                const res = store.register(form.name.value, form.email.value, form.password.value);
+                if (res.success) {
+                    store.login(form.email.value, form.password.value);
+                    app.navigate('/');
+                } else {
+                    authError.textContent = res.message;
+                    authError.style.display = 'block';
+                }
             }
         });
 
@@ -563,21 +624,18 @@ const Views = {
                 container.querySelector('#invite-btn').addEventListener('click', () => {
                     const name = prompt('名前を入力してください');
                     const email = prompt('メールアドレスを入力してください');
-                    if (name && email) {
-                        const newUser = { id: 'u' + Date.now(), name, email, password: 'password', role: 'user' };
-                        store.state.users.push(newUser);
-                        store.logAction('INVITE_USER', `Invited: ${email}`);
-                        store._save();
-
-                        // Generate mailto link
-                        const subject = encodeURIComponent('【TimeTracking Pro】招待のお知らせ');
-                        const body = encodeURIComponent(`${name}様\n\n工数管理ツール TimeTracking Pro へ招待されました。\n\nログイン情報:\nメール: ${email}\n初期パスワード: password\n\nツールを開いてログインしてください。`);
-                        const mailto = `mailto:${email}?subject=${subject}&body=${body}`;
-
-                        if (confirm(`${name}さんを登録しました。メールで招待を送りますか？`)) {
-                            window.location.href = mailto;
+                    const password = prompt('初期パスワードを入力してください (4文字以上)', 'password');
+                    
+                    if (name && email && password && password.length >= 4) {
+                        const res = store.register(name, email, password);
+                        if (res.success) {
+                            alert(`${name}さんを登録しました。ログイン画面から指定したメールアドレスとパスワードでログインできます。`);
+                            render();
+                        } else {
+                            alert(res.message);
                         }
-                        render();
+                    } else if (password && password.length < 4) {
+                        alert('パスワードは4文字以上で入力してください。');
                     }
                 });
             } else if (activeTab === 'settings') {
@@ -641,7 +699,7 @@ const Views = {
                 <div class="glass" style="padding: 1.5rem;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                         <h2>メンバー一覧</h2>
-                        <button id="invite-btn" class="btn btn-primary">メンバーを招待</button>
+                        <button id="invite-btn" class="btn btn-primary">メンバー追加（手登録）</button>
                     </div>
                     <div style="overflow-x: auto;">
                         <table style="width: 100%; border-collapse: collapse;">
@@ -658,7 +716,7 @@ const Views = {
                             </tbody>
                         </table>
                     </div>
-                    <p style="margin-top: 1rem; font-size: 0.875rem; color: var(--text-secondary);">※ 招待ボタンを押すと、メールアプリを起動してログイン情報を送信できます。</p>
+                    <p style="margin-top: 1rem; font-size: 0.875rem; color: var(--text-secondary);">※ メンバー追加（手登録）は、管理者が直接パスワードを設定してアカウントを作成する機能です。</p>
                 </div>
             `;
         };
