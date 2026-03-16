@@ -4,23 +4,6 @@ if (isRawGitHub) {
     alert('このURL（GitHub Raw）ではアプリが正常に動作しません。GitHub Pagesなどの適切なプレビュー環境で開いてください。');
 }
 
-// --- Global Error Handler (フリーズ対策) ---
-window.addEventListener('error', function(event) {
-    console.error('[Global Error]', event.error);
-    const loader = document.getElementById('initial-loader');
-    if (loader) {
-        loader.style.display = 'flex';
-        loader.innerHTML = `
-            <div style="color: var(--danger, #ef4444); padding: 2rem; text-align: center; background: rgba(30,41,59,0.9); border-radius: 1rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5);">
-                <h2 style="margin-bottom: 1rem;">致命的なエラーが発生しました</h2>
-                <p>アプリの起動または実行中に予期せぬエラーが発生し、停止しました。</p>
-                <p style="font-size: 0.8rem; margin-top: 1rem; color: var(--text-secondary, #94a3b8);">${event.message}</p>
-                <button onclick="if(confirm('データを初期状態にリセットしてアプリを再起動しますか？\\n※設定や記録が失われる可能性があります。')){ localStorage.removeItem('tt_pro_data'); location.reload(); }" style="margin-top: 1.5rem; padding: 0.75rem 1.5rem; background: var(--danger, #ef4444); color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-weight: bold;">データをリセットして強制再起動</button>
-            </div>
-        `;
-    }
-});
-
 // --- Store (Data Management) ---
 class Store {
     constructor() {
@@ -38,18 +21,22 @@ class Store {
             localStorage.removeItem(testKey);
             return true;
         } catch (e) {
-            console.warn('LocalStorage is not available:', e);
+            console.warn('[Store] LocalStorage is not available:', e);
             return false;
         }
     }
 
     async _checkPersistence() {
-        if (navigator.storage && navigator.storage.persist) {
-            this.storageStatus.persistent = await navigator.storage.persisted();
-            if (navigator.storage.estimate) {
-                const estimate = await navigator.storage.estimate();
-                this.storageStatus.estimate = estimate.usage;
+        try {
+            if (navigator.storage && navigator.storage.persist) {
+                this.storageStatus.persistent = await navigator.storage.persisted();
+                if (navigator.storage.estimate) {
+                    const estimate = await navigator.storage.estimate();
+                    this.storageStatus.estimate = estimate.usage;
+                }
             }
+        } catch (e) {
+            console.warn('[Store] Failed to check storage persistence, proceeding without it:', e);
         }
     }
 
@@ -75,17 +62,30 @@ class Store {
             auditLogs: []
         };
 
-        const saved = this.isStorageAvailable ? localStorage.getItem(this.STORAGE_KEY) : null;
-        if (!saved) {
-            console.log('[Store] No saved state found, using initial.');
-            return initialState;
-        }
-
         try {
-            const state = JSON.parse(saved);
+            const saved = this.isStorageAvailable ? localStorage.getItem(this.STORAGE_KEY) : null;
+            if (!saved) {
+                console.log('[Store] No saved state found, using initial.');
+                return initialState;
+            }
+
+            let state;
+            try {
+                state = JSON.parse(saved);
+            } catch (parseErr) {
+                console.error('[Store] Failed to parse saved state. Backing up corrupted data.', parseErr);
+                // パース失敗したデータを退避し、その後リセット
+                if (this.isStorageAvailable) {
+                    const backupKey = this.STORAGE_KEY + '_corrupted_' + Date.now();
+                    localStorage.setItem(backupKey, saved);
+                    console.warn(`[Store] Corrupted data saved to: ${backupKey}`);
+                }
+                return initialState;
+            }
             
             if (!state || typeof state !== 'object') {
-                throw new Error('Saved state is not a valid JSON object');
+                console.error('[Store] Saved state is invalid type, resetting.');
+                return initialState;
             }
 
             // currentUser の型チェック（稀に文字列が入ることがあるため）
@@ -98,7 +98,6 @@ class Store {
             
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
-                    console.warn(`[Store] Invalid array for ${key}, falling back to initial`);
                     mergedState[key] = initialState[key];
                 }
             });
@@ -106,19 +105,7 @@ class Store {
             console.log('[Store] State loaded successfully.');
             return mergedState;
         } catch (e) {
-            console.error('[Store] Failed to load or parse state from localStorage:', e);
-            // 壊滅的なデータ破損（JSON.parse失敗など）の場合、無言でリセットせず退避させる
-            if (this.isStorageAvailable && saved) {
-                try {
-                    const backupKey = this.STORAGE_KEY + '_corrupted_' + Date.now();
-                    localStorage.setItem(backupKey, saved);
-                    console.warn(`[Store] Corrupted data safely backed up to key: ${backupKey}`);
-                    // ブラウザのalertでユーザーに通知
-                    alert('【重要】保存されていたデータに異常を検知したため、内部でデータを安全な場所に退避（バックアップ）させた上で、初期状態にリセットしました。');
-                } catch(backupErr) {
-                    console.error('[Store] Failed to backup corrupted data', backupErr);
-                }
-            }
+            console.error('[Store] Fatal error while loading state from localStorage:', e);
             return initialState;
         }
     }
@@ -793,4 +780,31 @@ class App {
     }
 }
 
-const app = new App();
+// 致命的なクラッシュ（フリーズ）を防ぐためのグローバル初期化トラップ
+try {
+    window.store = new Store(); // デバッグしやすいように window にもアタッチ
+    window.app = new App();
+} catch (globalErr) {
+    console.error('[GlobalInit] Failed to initialize the application:', globalErr);
+    
+    // フリーズして真っ白・ローダー止まりになるのを防ぎ、緊急リセットUIを表示する
+    const loader = document.getElementById('initial-loader');
+    if (loader) loader.style.display = 'none';
+
+    const appDiv = document.getElementById('app');
+    if (appDiv) {
+        appDiv.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; text-align: center; padding: 2rem;">
+                <h2 style="color: #ef4444; margin-bottom: 1rem;">システムの初期化に失敗しました</h2>
+                <p style="margin-bottom: 2rem; color: #94a3b8;">ブラウザの保存データが壊れているか、環境に問題が発生しています。<br>アプリを初期状態にリセットして再起動しますか？（現在のデータは全て消去されます）</p>
+                <button id="emergency-reset-btn" style="padding: 1rem 2rem; background: #ef4444; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-weight: bold;">データをリセットしてアプリを再起動</button>
+            </div>
+        `;
+        document.getElementById('emergency-reset-btn').addEventListener('click', () => {
+            if (confirm('【警告】本当にすべてのデータをリセットしますか？')) {
+                localStorage.removeItem('tt_pro_data');
+                location.reload();
+            }
+        });
+    }
+}
