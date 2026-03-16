@@ -399,7 +399,8 @@ const Views = {
                         store.exportData();
                     }
                 };
-                nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+                const div = nav.querySelector('div');
+                div.insertBefore(diagBtn, div.firstChild);
             }
 
             container.querySelector('#time-entry-form').addEventListener('submit', (e) => {
@@ -541,7 +542,8 @@ const Views = {
                         store.exportData();
                     }
                 };
-                nav.insertBefore(diagBtn, nav.querySelector('div').firstChild);
+                const div = nav.querySelector('div');
+                div.insertBefore(diagBtn, div.firstChild);
             }
 
             if (activeTab === 'approvals') {
