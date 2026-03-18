@@ -7,14 +7,13 @@ if (isRawGitHub) {
 // --- Firebase Configuration ---
 // TODO: ここにFirebaseコンソールから取得した設定を貼り付けてください
 const firebaseConfig = {
-    // 例:
-    // apiKey: "AIzaSyDOCAbC123dEf456GhI789jKl01-MnO",
-    // authDomain: "myapp.firebaseapp.com",
-    // databaseURL: "https://myapp-default-rtdb.firebaseio.com",
-    // projectId: "myapp",
-    // storageBucket: "myapp.appspot.com",
-    // messagingSenderId: "123456789",
-    // appId: "1:123456789:web:abcdef"
+    apiKey: "AIzaSyD_7-voz_0SjD-zmc237hnU_jDMSxsHIsY",
+    authDomain: "time-6950d.firebaseapp.com",
+    projectId: "time-6950d",
+    storageBucket: "time-6950d.firebasestorage.app",
+    messagingSenderId: "698929145702",
+    appId: "1:698929145702:web:e499b30e7a933c852dcaa7",
+    measurementId: "G-FPDJTVY2YL"
 };
 
 let db = null;
@@ -98,7 +97,7 @@ class Store {
         try {
             const snapshot = await db.ref('tt_pro_data').once('value');
             let state = snapshot.val();
-            
+
             if (!state || typeof state !== 'object') {
                 console.log('[Store] No remote state found, initializing remote with default data.');
                 await db.ref('tt_pro_data').set(initialState);
@@ -106,7 +105,7 @@ class Store {
             }
 
             const mergedState = { ...localState, ...state };
-            
+
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
                     mergedState[key] = initialState[key];
@@ -140,7 +139,7 @@ class Store {
             // Remove currentUser before saving to DB, as it's local session state
             const stateToSave = { ...this.state };
             delete stateToSave.currentUser;
-            
+
             await db.ref('tt_pro_data').set(stateToSave);
         } catch (e) {
             console.error('Failed to save to Firebase:', e);
@@ -321,7 +320,7 @@ const Views = {
         const switchBtn = container.querySelector('#toggle-mode-btn');
         const subtitle = container.querySelector('#form-subtitle');
         const authError = container.querySelector('#auth-error');
-        
+
         let isLoginMode = true;
 
         switchBtn.addEventListener('click', () => {
@@ -345,7 +344,7 @@ const Views = {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
             authError.style.display = 'none';
-            
+
             if (isLoginMode) {
                 if (store.login(form.email.value, form.password.value)) {
                     app.navigate('/');
@@ -448,10 +447,10 @@ const Views = {
                             <h3 style="margin-bottom: 1.5rem; color: var(--text-secondary);">リアルタイム計測</h3>
                             <div id="timer-display" style="font-size: 3rem; font-family: var(--font-heading); font-weight: 700; margin-bottom: 1.5rem;">
                                 ${store.state.activeTimer && store.state.activeTimer.userId === user.id ? (() => {
-                                    const diff = Date.now() - store.state.activeTimer.startTime;
-                                    const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
-                                    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                                })() : '00:00:00'}
+                    const diff = Date.now() - store.state.activeTimer.startTime;
+                    const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
+                    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                })() : '00:00:00'}
                             </div>
                             <button id="tracker-btn" class="btn btn-primary" style="width: 100%; height: 60px; font-size: 1.25rem;">開始</button>
                         </div>
@@ -528,9 +527,9 @@ const Views = {
 
             const trackerBtn = container.querySelector('#tracker-btn');
             const timerDisplay = container.querySelector('#timer-display');
-            
+
             if (store.state.activeTimer && store.state.activeTimer.userId === user.id) {
-                trackerBtn.textContent = '停止'; 
+                trackerBtn.textContent = '停止';
                 trackerBtn.style.backgroundColor = 'var(--danger)';
                 if (timerInterval) clearInterval(timerInterval);
                 timerInterval = setInterval(() => {
@@ -565,7 +564,7 @@ const Views = {
                     if (hours >= 0.5) {
                         const entryForm = container.querySelector('#time-entry-form');
                         const projId = entryForm['project-id'] ? entryForm['project-id'].value : null;
-                        
+
                         if (store.state.projects.length === 0 || store.state.workContents.length === 0) {
                             alert('計測は終了しましたが、プロジェクトまたは作業内容が未設定のため保存できませんでした。');
                         } else {
@@ -687,7 +686,7 @@ const Views = {
                     const name = prompt('名前を入力してください');
                     const email = prompt('メールアドレスを入力してください');
                     const password = prompt('初期パスワードを入力してください (4文字以上)', 'password');
-                    
+
                     if (name && email && password && password.length >= 4) {
                         const res = store.register(name, email, password);
                         if (res.success) {
@@ -827,10 +826,10 @@ class App {
     constructor() {
         this.appElement = document.getElementById('app');
         this.lastHash = window.location.hash;
-        
+
         window.addEventListener('popstate', () => this.route());
         window.addEventListener('hashchange', () => this.route());
-        
+
         // Simple polling for hash changes as backup
         setInterval(() => {
             const currentHash = window.location.hash;
@@ -839,14 +838,14 @@ class App {
                 this.route();
             }
         }, 500);
-        
-        
+
+
         // Disable initial routing here, we will call it from global initialization once store is loaded
     }
 
     route() {
         console.log('[App] Routing to:', window.location.hash || '/');
-        
+
         // ローダーを非表示にする（確実な実行）
         const loader = document.getElementById('initial-loader');
         if (loader) loader.style.display = 'none';
@@ -856,17 +855,17 @@ class App {
             let path = window.location.hash.replace(/^#/, '') || '/';
             if (path === '') path = '/';
             if (!path.startsWith('/')) path = '/' + path;
-            
+
             this.lastHash = window.location.hash;
 
-            if (!user && path !== '/login') { 
+            if (!user && path !== '/login') {
                 console.log('[App] No user, redirecting to /login');
-                this.navigate('/login'); 
-                return; 
+                this.navigate('/login');
+                return;
             }
-            if (user && path === '/login') { 
-                this.navigate('/'); 
-                return; 
+            if (user && path === '/login') {
+                this.navigate('/');
+                return;
             }
 
             let view;
@@ -908,13 +907,13 @@ class App {
 // 致命的なクラッシュ（フリーズ）を防ぐためのグローバル初期化トラップ
 (async function initializeApp() {
     try {
-        window.store = new Store(); // デバッグしやすいように window にもアタッチ
-        await window.store.init(); // データをサーバーから取得
+        window.store = store; // デバッグしやすいように window にもアタッチ
+        await store.init(); // データをサーバーから取得
         window.app = new App();
         window.app.route(); // 初期ルーティングを手動で実行
     } catch (globalErr) {
         console.error('[GlobalInit] Failed to initialize the application:', globalErr);
-        
+
         // フリーズして真っ白・ローダー止まりになるのを防ぎ、緊急リセットUIを表示する
         const loader = document.getElementById('initial-loader');
         if (loader) loader.style.display = 'none';
