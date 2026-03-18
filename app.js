@@ -4,46 +4,73 @@ if (isRawGitHub) {
     alert('このURL（GitHub Raw）ではアプリが正常に動作しません。GitHub Pagesなどの適切なプレビュー環境で開いてください。');
 }
 
+// --- Firebase Configuration ---
+// TODO: ここにFirebaseコンソールから取得した設定を貼り付けてください
+const firebaseConfig = {
+    // 例:
+    // apiKey: "AIzaSyDOCAbC123dEf456GhI789jKl01-MnO",
+    // authDomain: "myapp.firebaseapp.com",
+    // databaseURL: "https://myapp-default-rtdb.firebaseio.com",
+    // projectId: "myapp",
+    // storageBucket: "myapp.appspot.com",
+    // messagingSenderId: "123456789",
+    // appId: "1:123456789:web:abcdef"
+};
+
+let db = null;
+try {
+    if (Object.keys(firebaseConfig).length > 0) {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+    } else {
+        console.warn('[Firebase] Config is missing. Please set firebaseConfig.');
+    }
+} catch (e) {
+    console.error('[Firebase] Initialization error:', e);
+}
+
 // --- Store (Data Management) ---
 class Store {
     constructor() {
-        this.STORAGE_KEY = 'tt_pro_data';
-        this.isStorageAvailable = this._checkStorageAvailable();
-        this.storageStatus = { available: this.isStorageAvailable, persistent: false, estimate: 0 };
-        this._checkPersistence();
-        this.state = this._load();
+        this.state = null; // Will be initialized by init()
+        this.listeners = [];
     }
 
-    _checkStorageAvailable() {
-        try {
-            const testKey = '__storage_test__';
-            localStorage.setItem(testKey, testKey);
-            localStorage.removeItem(testKey);
-            return true;
-        } catch (e) {
-            console.warn('[Store] LocalStorage is not available:', e);
-            return false;
-        }
+    async init() {
+        this.state = await this._load();
+        this._setupRealtimeSync();
     }
 
-    async _checkPersistence() {
-        try {
-            if (navigator.storage && navigator.storage.persist) {
-                this.storageStatus.persistent = await navigator.storage.persisted();
-                if (navigator.storage.estimate) {
-                    const estimate = await navigator.storage.estimate();
-                    this.storageStatus.estimate = estimate.usage;
+    _setupRealtimeSync() {
+        if (!db) return;
+        const ref = db.ref('tt_pro_data');
+        ref.on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                const currentUser = this.state && this.state.currentUser ? this.state.currentUser : null;
+                this.state = { ...this.state, ...data };
+                // currentUser is strictly local/session state, ensure it doesn't get overwritten by remote sync if we're changing login states
+                if (currentUser) {
+                    this.state.currentUser = currentUser;
                 }
+                this._notifyListeners();
             }
-        } catch (e) {
-            console.warn('[Store] Failed to check storage persistence, proceeding without it:', e);
-        }
+        });
     }
 
-    _load() {
-        console.log('[Store] Loading state...');
+    subscribe(listener) {
+        this.listeners.push(listener);
+    }
+
+    _notifyListeners() {
+        this.listeners.forEach(listener => listener(this.state));
+    }
+
+    // _checkStorageAvailable() and _checkPersistence() removed since we use Firebase
+
+    async _load() {
+        console.log('[Store] Loading state from Firebase...');
         const initialState = {
-            currentUser: null,
             users: [
                 { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }
             ],
@@ -58,39 +85,27 @@ class Store {
             activeTimer: null
         };
 
-        try {
-            const saved = this.isStorageAvailable ? localStorage.getItem(this.STORAGE_KEY) : null;
-            if (!saved) {
-                console.log('[Store] No saved state found, using initial.');
-                return initialState;
-            }
+        const localState = {
+            currentUser: null,
+            ...initialState
+        };
 
-            let state;
-            try {
-                state = JSON.parse(saved);
-            } catch (parseErr) {
-                console.error('[Store] Failed to parse saved state. Backing up corrupted data.', parseErr);
-                // パース失敗したデータを退避し、その後リセット
-                if (this.isStorageAvailable) {
-                    const backupKey = this.STORAGE_KEY + '_corrupted_' + Date.now();
-                    localStorage.setItem(backupKey, saved);
-                    console.warn(`[Store] Corrupted data saved to: ${backupKey}`);
-                }
-                return initialState;
-            }
+        if (!db) {
+            console.error('[Store] Firebase DB is not initialized. Using fallback local state.');
+            return localState;
+        }
+
+        try {
+            const snapshot = await db.ref('tt_pro_data').once('value');
+            let state = snapshot.val();
             
             if (!state || typeof state !== 'object') {
-                console.error('[Store] Saved state is invalid type, resetting.');
-                return initialState;
+                console.log('[Store] No remote state found, initializing remote with default data.');
+                await db.ref('tt_pro_data').set(initialState);
+                return localState;
             }
 
-            // currentUser の型チェック（稀に文字列が入ることがあるため）
-            if (state.currentUser && (typeof state.currentUser !== 'object' || !state.currentUser.id)) {
-                console.warn('[Store] Invalid currentUser format detected, resetting user state.');
-                state.currentUser = null;
-            }
-
-            const mergedState = { ...initialState, ...state };
+            const mergedState = { ...localState, ...state };
             
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
@@ -106,11 +121,11 @@ class Store {
                 mergedState.workContents = initialState.workContents;
             }
 
-            console.log('[Store] State loaded successfully.');
+            console.log('[Store] State loaded successfully from Firebase.');
             return mergedState;
         } catch (e) {
-            console.error('[Store] Fatal error while loading state from localStorage:', e);
-            return initialState;
+            console.error('[Store] Fatal error while fetching state from Firebase:', e);
+            return localState;
         }
     }
 
@@ -119,19 +134,17 @@ class Store {
         return state;
     }
 
-    _save() {
-        if (this.isStorageAvailable) {
-            try {
-                localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.state));
-            } catch (e) {
-                console.error('Failed to save to localStorage:', e);
-                // 容量不足などで保存できない場合に警告
-                if (e.name === 'QuotaExceededError') {
-                    alert('ブラウザの保存容量がいっぱいです。不要なデータを整理するか、データをエクスポートしてください。');
-                } else {
-                    alert('データの保存に失敗しました。ページをリロードせずに、データをエクスポートしてバックアップをとってください。');
-                }
-            }
+    async _save() {
+        if (!db) return;
+        try {
+            // Remove currentUser before saving to DB, as it's local session state
+            const stateToSave = { ...this.state };
+            delete stateToSave.currentUser;
+            
+            await db.ref('tt_pro_data').set(stateToSave);
+        } catch (e) {
+            console.error('Failed to save to Firebase:', e);
+            alert('データの保存に失敗しました。インターネット接続を確認してください。');
         }
     }
 
@@ -209,7 +222,7 @@ class Store {
     }
 
     getCurrentUser() {
-        return this.state.currentUser;
+        return this.state && this.state.currentUser ? this.state.currentUser : null;
     }
 
     addTimeEntry(entry) {
@@ -827,8 +840,8 @@ class App {
             }
         }, 500);
         
-        // Start routing
-        this.route();
+        
+        // Disable initial routing here, we will call it from global initialization once store is loaded
     }
 
     route() {
@@ -863,6 +876,9 @@ class App {
                 view = Views.admin();
             } else if (user) {
                 view = Views.dashboard();
+                if (this.currentViewRenderFunction) {
+                    store.subscribe(this.currentViewRenderFunction);
+                }
             } else {
                 this.navigate('/login');
                 return;
@@ -890,30 +906,60 @@ class App {
 }
 
 // 致命的なクラッシュ（フリーズ）を防ぐためのグローバル初期化トラップ
-try {
-    window.store = new Store(); // デバッグしやすいように window にもアタッチ
-    window.app = new App();
-} catch (globalErr) {
-    console.error('[GlobalInit] Failed to initialize the application:', globalErr);
-    
-    // フリーズして真っ白・ローダー止まりになるのを防ぎ、緊急リセットUIを表示する
-    const loader = document.getElementById('initial-loader');
-    if (loader) loader.style.display = 'none';
+(async function initializeApp() {
+    try {
+        window.store = new Store(); // デバッグしやすいように window にもアタッチ
+        await window.store.init(); // データをサーバーから取得
+        window.app = new App();
+        window.app.route(); // 初期ルーティングを手動で実行
+    } catch (globalErr) {
+        console.error('[GlobalInit] Failed to initialize the application:', globalErr);
+        
+        // フリーズして真っ白・ローダー止まりになるのを防ぎ、緊急リセットUIを表示する
+        const loader = document.getElementById('initial-loader');
+        if (loader) loader.style.display = 'none';
 
-    const appDiv = document.getElementById('app');
-    if (appDiv) {
-        appDiv.innerHTML = `
-            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; text-align: center; padding: 2rem;">
-                <h2 style="color: #ef4444; margin-bottom: 1rem;">システムの初期化に失敗しました</h2>
-                <p style="margin-bottom: 2rem; color: #94a3b8;">ブラウザの保存データが壊れているか、環境に問題が発生しています。<br>アプリを初期状態にリセットして再起動しますか？（現在のデータは全て消去されます）</p>
-                <button id="emergency-reset-btn" style="padding: 1rem 2rem; background: #ef4444; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-weight: bold;">データをリセットしてアプリを再起動</button>
-            </div>
-        `;
-        document.getElementById('emergency-reset-btn').addEventListener('click', () => {
-            if (confirm('【警告】本当にすべてのデータをリセットしますか？')) {
-                localStorage.removeItem('tt_pro_data');
-                location.reload();
-            }
-        });
+        const appDiv = document.getElementById('app');
+        if (appDiv) {
+            appDiv.innerHTML = `
+                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; text-align: center; padding: 2rem;">
+                    <h2 style="color: #ef4444; margin-bottom: 1rem;">システムの初期化に失敗しました</h2>
+                    <p style="margin-bottom: 2rem; color: #94a3b8;">Firebase データベースとの通信に失敗しました。<br><code>firebaseConfig</code> の設定が正しいか、インターネット接続を確認してください。</p>
+                    <button onclick="location.reload()" style="padding: 1rem 2rem; background: var(--primary); color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-weight: bold;">再試行</button>
+                    
+                    <h3 style="margin-top: 3rem; color: #ef4444; font-size: 1rem;">緊急リセット (非推奨)</h3>
+                    <p style="margin-bottom: 1rem; color: #94a3b8; font-size: 0.8rem;">サーバーのデータが破損している場合のみ使用してください。</p>
+                    <button id="emergency-reset-btn" style="padding: 0.5rem 1rem; background: #ef4444; color: white; border: none; border-radius: 0.5rem; cursor: pointer; font-size: 0.8rem;">データをリセットしてアプリを再起動</button>
+                </div>
+            `;
+            document.getElementById('emergency-reset-btn').addEventListener('click', async () => {
+                if (confirm('【警告】本当にFirebase上のすべてのデータを初期状態にリセットしますか？')) {
+                    try {
+                        if (db) {
+                            const initial = {
+                                users: [
+                                    { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }
+                                ],
+                                projects: [
+                                    { id: 'p_default', name: '一般業務', status: 'active' }
+                                ],
+                                workContents: [
+                                    { id: 'w_default', name: '通常作業' }
+                                ],
+                                timeEntries: [],
+                                auditLogs: [],
+                                activeTimer: null
+                            };
+                            await db.ref('tt_pro_data').set(initial);
+                            location.reload();
+                        } else {
+                            alert('データベースに接続されていません。');
+                        }
+                    } catch (e) {
+                        alert('リセットに失敗しました。');
+                    }
+                }
+            });
+        }
     }
-}
+})();
