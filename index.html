@@ -5,6 +5,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TimeTracking Pro - 工数管理・承認システム</title>
+    <script>
+        window.onerror = function(msg, src, lineno, colno, error) {
+            setTimeout(function() {
+                var el = document.getElementById('initial-loader');
+                if (el) {
+                    el.innerHTML = '<div style="color: #ef4444; padding: 2rem; text-align: left;"><h3>Fatal Error</h3><p>' + msg + '</p><p>Line: ' + lineno + ' - ' + src + '</p></div>';
+                    el.style.display = 'block';
+                }
+            }, 100);
+        };
+        window.addEventListener("unhandledrejection", function(e) {
+            setTimeout(function() {
+                var el = document.getElementById('initial-loader');
+                if (el) {
+                    var r = e.reason ? (e.reason.message || e.reason) : 'Unknown Promise Rejection';
+                    el.innerHTML = '<div style="color: #ef4444; padding: 2rem; text-align: left;"><h3>Promise Error</h3><p>' + r + '</p></div>';
+                    el.style.display = 'block';
+                }
+            }, 100);
+        });
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -36,7 +57,7 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <!-- Combined Script -->
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=2026031802"></script>
 </body>
 
 </html>
