@@ -95,17 +95,23 @@ class Store {
         }
 
         try {
-            const snapshot = await db.ref('tt_pro_data').once('value');
+            // Promise.race to enforce a 5-second timeout for the initial load
+            const snapshot = await Promise.race([
+                db.ref('tt_pro_data').once('value'),
+                new Promise((resolve, reject) => setTimeout(() => reject(new Error('Firebase connection timeout')), 5000))
+            ]);
+            
             let state = snapshot.val();
-
+            
             if (!state || typeof state !== 'object') {
                 console.log('[Store] No remote state found, initializing remote with default data.');
-                await db.ref('tt_pro_data').set(initialState);
+                // Fire and forget default data setup to avoid hanging the UI
+                db.ref('tt_pro_data').set(initialState).catch(e => console.error('Silent set error:', e));
                 return localState;
             }
 
             const mergedState = { ...localState, ...state };
-
+            
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
                     mergedState[key] = initialState[key];
@@ -124,6 +130,9 @@ class Store {
             return mergedState;
         } catch (e) {
             console.error('[Store] Fatal error while fetching state from Firebase:', e);
+            // ローダーを非表示にする（エラーでフォールバックするため）
+            const loader = document.getElementById('initial-loader');
+            if (loader) loader.style.display = 'none';
             return localState;
         }
     }
