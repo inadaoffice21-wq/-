@@ -33,10 +33,22 @@ class Store {
     constructor() {
         this.state = null; // Will be initialized by init()
         this.listeners = [];
+        // 持続的なログイン状態を localStorage から復元
+        this.savedUser = null;
+        try {
+            const user = localStorage.getItem('tt_pro_user');
+            if (user) this.savedUser = JSON.parse(user);
+        } catch (e) {
+            console.error('LocalStorage load error:', e);
+        }
     }
 
     async init() {
         this.state = await this._load();
+        // localStorage から復元されたユーザーがあれば state にセット
+        if (this.savedUser && this.state && !this.state.currentUser) {
+            this.state.currentUser = this.savedUser;
+        }
         this._setupRealtimeSync();
     }
 
@@ -105,12 +117,14 @@ class Store {
             
             if (!state || typeof state !== 'object') {
                 console.log('[Store] No remote state found, initializing remote with default data.');
-                // Fire and forget default data setup to avoid hanging the UI
-                db.ref('tt_pro_data').set(initialState).catch(e => console.error('Silent set error:', e));
+                // ユーザーが既にログインしている場合は、新規リモートデータにも currentUser を含めない
+                const uploadState = { ...initialState };
+                db.ref('tt_pro_data').set(uploadState).catch(e => console.error('Silent set error:', e));
                 return localState;
             }
 
-            const mergedState = { ...localState, ...state };
+            // ローカルで保持しているセッション (currentUser) を優先しつつ、リモートデータをマージ
+            const mergedState = { ...state, currentUser: this.state?.currentUser || localState.currentUser };
             
             ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
                 if (!Array.isArray(mergedState[key])) {
@@ -196,6 +210,8 @@ class Store {
         if (user) {
             this.state.currentUser = { ...user };
             delete this.state.currentUser.password;
+            // LocalStorage にユーザー情報を保存（パスワードは除外済み）
+            localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
             this._save();
             return true;
         }
@@ -210,6 +226,7 @@ class Store {
         this.state.users.push(newUser);
         this.logAction('REGISTER_USER', `Registered: ${email}`);
         this._save();
+        // 登録直後にログインする場合は login() 内で localStorage 保存される
         return { success: true, user: newUser };
     }
 
@@ -226,6 +243,7 @@ class Store {
 
     logout() {
         this.state.currentUser = null;
+        localStorage.removeItem('tt_pro_user');
         this._save();
     }
 
