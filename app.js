@@ -45,21 +45,13 @@ class Store {
         const initialState = {
             currentUser: null,
             users: [
-                { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' },
-                { id: 'user1', name: '一般ユーザー1', email: 'user@example.com', password: 'password', role: 'user' }
+                { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }
             ],
-            projects: [
-                { id: 'p1', name: 'プロジェクトA', status: 'active' },
-                { id: 'p2', name: 'プロジェクトB', status: 'active' }
-            ],
-            workContents: [
-                { id: 'w1', name: '開発' },
-                { id: 'w2', name: 'ミーティング' },
-                { id: 'w3', name: '資料作成' },
-                { id: 'w4', name: 'その他' }
-            ],
+            projects: [],
+            workContents: [],
             timeEntries: [],
-            auditLogs: []
+            auditLogs: [],
+            activeTimer: null
         };
 
         try {
@@ -376,8 +368,6 @@ const Views = {
         const container = document.createElement('div');
         container.className = 'container fade-in';
 
-        let isTracking = false;
-        let startTime = null;
         let timerInterval = null;
 
         const render = () => {
@@ -386,7 +376,6 @@ const Views = {
                 <nav class="navbar glass">
                     <h1 class="brand">TimeTracking Pro</h1>
                     <div style="display: flex; align-items: center; gap: 1rem;">
-                        <button class="btn" id="share-btn" style="background: rgba(99, 102, 241, 0.1); color: var(--primary); font-size: 0.875rem;">URLを共有</button>
                         <button class="btn" id="pw-change-btn" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;">パスワード変更</button>
                         <span>${user.name}さん</span>
                         <button class="btn" id="logout-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">ログアウト</button>
@@ -429,21 +418,19 @@ const Views = {
                     <div>
                         <div class="glass" style="padding: 2rem; text-align: center;">
                             <h3 style="margin-bottom: 1.5rem; color: var(--text-secondary);">リアルタイム計測</h3>
-                            <div id="timer-display" style="font-size: 3rem; font-family: var(--font-heading); font-weight: 700; margin-bottom: 1.5rem;">00:00:00</div>
+                            <div id="timer-display" style="font-size: 3rem; font-family: var(--font-heading); font-weight: 700; margin-bottom: 1.5rem;">
+                                ${store.state.activeTimer && store.state.activeTimer.userId === user.id ? (() => {
+                                    const diff = Date.now() - store.state.activeTimer.startTime;
+                                    const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
+                                    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                                })() : '00:00:00'}
+                            </div>
                             <button id="tracker-btn" class="btn btn-primary" style="width: 100%; height: 60px; font-size: 1.25rem;">開始</button>
                         </div>
                     </div>
                 </div>
             `;
             container.querySelector('#logout-btn').addEventListener('click', () => { store.logout(); app.navigate('/login'); });
-
-            container.querySelector('#share-btn').addEventListener('click', () => {
-                const url = window.location.href.split('#')[0];
-                navigator.clipboard.writeText(url).then(() => {
-                    const msg = `サイトのURLをコピーしました！利用中のURL: ${url}\n\n【重要】別のURL（ブランチ毎のプレビュー等）で開くとデータが引き継がれません。常にこのURLで開くようにしてください。`;
-                    alert(msg);
-                });
-            });
 
             // 診断UIの追加（重複防止）
             const nav = container.querySelector('.navbar');
@@ -513,23 +500,49 @@ const Views = {
 
             const trackerBtn = container.querySelector('#tracker-btn');
             const timerDisplay = container.querySelector('#timer-display');
+            
+            if (store.state.activeTimer && store.state.activeTimer.userId === user.id) {
+                trackerBtn.textContent = '停止'; 
+                trackerBtn.style.backgroundColor = 'var(--danger)';
+                if (timerInterval) clearInterval(timerInterval);
+                timerInterval = setInterval(() => {
+                    const diff = Date.now() - store.state.activeTimer.startTime;
+                    const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
+                    timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                }, 1000);
+            } else {
+                trackerBtn.textContent = '開始';
+                trackerBtn.style.backgroundColor = '';
+                timerDisplay.textContent = '00:00:00';
+            }
+
             trackerBtn.addEventListener('click', () => {
-                if (!isTracking) {
-                    isTracking = true; startTime = Date.now(); trackerBtn.textContent = '停止'; trackerBtn.style.backgroundColor = 'var(--danger)';
+                const isActive = store.state.activeTimer && store.state.activeTimer.userId === user.id;
+                if (!isActive) {
+                    store.state.activeTimer = { userId: user.id, startTime: Date.now() };
+                    store._save();
+                    trackerBtn.textContent = '停止'; trackerBtn.style.backgroundColor = 'var(--danger)';
+                    if (timerInterval) clearInterval(timerInterval);
                     timerInterval = setInterval(() => {
-                        const diff = Date.now() - startTime;
+                        const diff = Date.now() - store.state.activeTimer.startTime;
                         const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
                         timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
                     }, 1000);
                 } else {
-                    isTracking = false; clearInterval(timerInterval);
-                    const hours = Math.round(((Date.now() - startTime) / 3600000) * 2) / 2;
+                    const st = store.state.activeTimer.startTime;
+                    store.state.activeTimer = null;
+                    store._save();
+                    if (timerInterval) clearInterval(timerInterval);
+                    const hours = Math.round(((Date.now() - st) / 3600000) * 2) / 2;
                     if (hours >= 0.5) {
                         const entryForm = container.querySelector('#time-entry-form');
+                        const projId = entryForm['project-id'] ? entryForm['project-id'].value : null;
                         const options = store.state.workContents.map(w => w.name).join(', ');
-                        const desc = prompt(`計測を終了しました (${hours}h)。作業内容を入力または選択してください:\n${options}`, store.state.workContents[0].name);
-                        if (desc) { store.addTimeEntry({ userId: user.id, projectId: entryForm['project-id'].value, hours, description: desc }); render(); }
-                    } else { alert('計測時間不足（0.5h未満）のため記録されませんでした。'); render(); }
+                        const defOpt = store.state.workContents[0] ? store.state.workContents[0].name : '';
+                        const desc = prompt(`計測を終了しました (${hours}h)。作業内容を入力または選択してください:\n${options}`, defOpt);
+                        if (desc && projId) { store.addTimeEntry({ userId: user.id, projectId: projId, hours, description: desc }); }
+                    } else { alert('計測時間不足（0.5h未満）のため記録されませんでした。'); }
+                    render();
                 }
             });
         };
@@ -550,7 +563,7 @@ const Views = {
                 <nav class="navbar glass">
                     <h1 class="brand">TimeTracking Pro (管理者)</h1>
                     <div style="display: flex; align-items: center; gap: 1rem;">
-                        <button class="btn" id="share-btn" style="background: rgba(99, 102, 241, 0.1); color: var(--primary); font-size: 0.875rem;">URLを共有</button>
+                        <button class="btn" id="pw-change-btn" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;">パスワード変更</button>
                         <span>${user.name}さん</span>
                         <button class="btn" id="logout-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">ログアウト</button>
                     </div>
@@ -580,12 +593,15 @@ const Views = {
             // Logout
             container.querySelector('#logout-btn').addEventListener('click', () => { store.logout(); app.navigate('/login'); });
 
-            container.querySelector('#share-btn').addEventListener('click', () => {
-                const url = window.location.href.split('#')[0];
-                navigator.clipboard.writeText(url).then(() => {
-                    const msg = `サイトのURLをコピーしました！利用中のURL: ${url}\n\n【重要】別のURL（ブランチ毎のプレビュー等）で開くとデータが引き継がれません。常にこのURLで開くようにしてください。`;
-                    alert(msg);
-                });
+            container.querySelector('#pw-change-btn').addEventListener('click', () => {
+                const newPw = prompt('新しいパスワードを入力してください');
+                if (newPw && newPw.length >= 4) {
+                    if (store.updatePassword(user.id, newPw)) {
+                        alert('パスワードを変更しました。次回ログイン時から有効になります。');
+                    }
+                } else if (newPw) {
+                    alert('パスワードは4文字以上で入力してください。');
+                }
             });
 
             // 診断UIの追加（重複防止）
@@ -621,6 +637,19 @@ const Views = {
                     const n = prompt('プロジェクト名'); if (n) { store.state.projects.push({ id: 'p' + Date.now(), name: n, status: 'active' }); store.logAction('CREATE_PROJECT', n); store._save(); render(); }
                 });
             } else if (activeTab === 'members') {
+                container.querySelectorAll('.admin-pw-change-btn').forEach(btn => btn.addEventListener('click', () => {
+                    const targetId = btn.dataset.id;
+                    const targetName = btn.dataset.name;
+                    const newPw = prompt(`${targetName}さんの新しいパスワードを入力してください`);
+                    if (newPw && newPw.length >= 4) {
+                        if (store.updatePassword(targetId, newPw)) {
+                            alert('パスワードを変更しました。');
+                        }
+                    } else if (newPw) {
+                        alert('パスワードは4文字以上で入力してください。');
+                    }
+                }));
+
                 container.querySelector('#invite-btn').addEventListener('click', () => {
                     const name = prompt('名前を入力してください');
                     const email = prompt('メールアドレスを入力してください');
@@ -703,14 +732,14 @@ const Views = {
                     </div>
                     <div style="overflow-x: auto;">
                         <table style="width: 100%; border-collapse: collapse;">
-                            <thead><tr style="border-bottom: 1px solid var(--border); text-align: left;"><th style="padding: 1rem;">名前</th><th style="padding: 1rem;">メールアドレス</th><th style="padding: 1rem;">権限</th><th style="padding: 1rem;">ステータス</th></tr></thead>
+                            <thead><tr style="border-bottom: 1px solid var(--border); text-align: left;"><th style="padding: 1rem;">名前</th><th style="padding: 1rem;">メールアドレス</th><th style="padding: 1rem;">権限</th><th style="padding: 1rem;">操作</th></tr></thead>
                             <tbody>
                                 ${users.map(u => `
                                     <tr style="border-bottom: 1px solid var(--border);">
                                         <td style="padding: 1rem;">${u.name}</td>
                                         <td style="padding: 1rem;">${u.email}</td>
                                         <td style="padding: 1rem;">${u.role === 'admin' ? '管理者' : '一般ユーザー'}</td>
-                                        <td style="padding: 1rem;"><span style="color: var(--success);">有効</span></td>
+                                        <td style="padding: 1rem;"><button class="btn admin-pw-change-btn" data-id="${u.id}" data-name="${u.name}" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; background: var(--bg-input);">PW変更</button></td>
                                     </tr>
                                 `).join('')}
                             </tbody>
