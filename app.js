@@ -47,8 +47,12 @@ class Store {
             users: [
                 { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }
             ],
-            projects: [],
-            workContents: [],
+            projects: [
+                { id: 'p_default', name: '一般業務', status: 'active' }
+            ],
+            workContents: [
+                { id: 'w_default', name: '通常作業' }
+            ],
             timeEntries: [],
             auditLogs: [],
             activeTimer: null
@@ -93,6 +97,14 @@ class Store {
                     mergedState[key] = initialState[key];
                 }
             });
+
+            // If empty, supply defaults so the app doesn't break
+            if (mergedState.projects.length === 0) {
+                mergedState.projects = initialState.projects;
+            }
+            if (mergedState.workContents.length === 0) {
+                mergedState.workContents = initialState.workContents;
+            }
 
             console.log('[Store] State loaded successfully.');
             return mergedState;
@@ -387,17 +399,20 @@ const Views = {
                             <h2 style="margin-bottom: 1rem;">工数入力</h2>
                             <form id="time-entry-form" style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 1rem; align-items: end;">
                                 <div class="input-group" style="margin-bottom:0;"><label>プロジェクト</label>
-                                    <select id="project-id" class="input-field" required>${store.state.projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select>
+                                    <select id="project-id" class="input-field" required>${store.state.projects.length > 0 ? store.state.projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('') : '<option value="" disabled selected>未設定</option>'}</select>
                                 </div>
                                 <div class="input-group" style="margin-bottom:0;"><label>時間 (時間)</label>
                                     <input type="number" id="hours" class="input-field" step="0.5" min="0.5" max="24" placeholder="1.5" required>
                                 </div>
                                 <div class="input-group" style="margin-bottom:0;"><label>作業内容</label>
                                     <select id="description" class="input-field" required>
-                                        ${store.state.workContents.map(w => `<option value="${w.name}">${w.name}</option>`).join('')}
+                                        ${store.state.workContents.length > 0 ? store.state.workContents.map(w => `<option value="${w.name}">${w.name}</option>`).join('') : '<option value="" disabled selected>未設定</option>'}
                                     </select>
                                 </div>
-                                <button type="submit" class="btn btn-primary">保存</button>
+                                <div style="display: flex; flex-direction: column; justify-content: flex-end;">
+                                    <button type="submit" class="btn btn-primary" ${store.state.projects.length === 0 || store.state.workContents.length === 0 ? 'disabled' : ''}>保存</button>
+                                </div>
+                                ${store.state.projects.length === 0 || store.state.workContents.length === 0 ? '<div style="grid-column: 1 / -1; color: var(--danger); font-size: 0.875rem; margin-top: 0.5rem;">※ 管理者によってプロジェクトまたは作業内容が設定されていないため、保存できません。</div>' : ''}
                             </form>
                         </div>
                         <div class="glass" style="padding: 1.5rem;">
@@ -537,10 +552,15 @@ const Views = {
                     if (hours >= 0.5) {
                         const entryForm = container.querySelector('#time-entry-form');
                         const projId = entryForm['project-id'] ? entryForm['project-id'].value : null;
-                        const options = store.state.workContents.map(w => w.name).join(', ');
-                        const defOpt = store.state.workContents[0] ? store.state.workContents[0].name : '';
-                        const desc = prompt(`計測を終了しました (${hours}h)。作業内容を入力または選択してください:\n${options}`, defOpt);
-                        if (desc && projId) { store.addTimeEntry({ userId: user.id, projectId: projId, hours, description: desc }); }
+                        
+                        if (store.state.projects.length === 0 || store.state.workContents.length === 0) {
+                            alert('計測は終了しましたが、プロジェクトまたは作業内容が未設定のため保存できませんでした。');
+                        } else {
+                            const options = store.state.workContents.map(w => w.name).join(', ');
+                            const defOpt = store.state.workContents[0] ? store.state.workContents[0].name : '';
+                            const desc = prompt(`計測を終了しました (${hours}h)。作業内容を入力または選択してください:\n${options}`, defOpt);
+                            if (desc && projId) { store.addTimeEntry({ userId: user.id, projectId: projId, hours, description: desc }); }
+                        }
                     } else { alert('計測時間不足（0.5h未満）のため記録されませんでした。'); }
                     render();
                 }
