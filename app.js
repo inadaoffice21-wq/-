@@ -275,6 +275,7 @@ class Store {
 }
 
 const store = new Store();
+let app; // Explicit declaration to prevent DOM ID conflicts
 
 // --- Views (Components) ---
 
@@ -292,15 +293,15 @@ const Views = {
                 <form id="auth-form">
                     <div id="name-group" class="input-group" style="display: none;">
                         <label for="name">名前</label>
-                        <input type="text" id="name" class="input-field" placeholder="山田 太郎">
+                        <input type="text" id="name" name="name" class="input-field" placeholder="山田 太郎">
                     </div>
                     <div class="input-group">
                         <label for="email">メールアドレス</label>
-                        <input type="email" id="email" class="input-field" placeholder="example@example.com" required>
+                        <input type="email" id="email" name="email" class="input-field" placeholder="example@example.com" required>
                     </div>
                     <div class="input-group">
                         <label for="password">パスワード</label>
-                        <input type="password" id="password" class="input-field" placeholder="••••••••" required>
+                        <input type="password" id="password" name="password" class="input-field" placeholder="••••••••" required>
                     </div>
                     <div id="auth-error" style="color: var(--danger); font-size: 0.875rem; margin-bottom: 1rem; display: none;"></div>
                     <button type="submit" id="submit-btn" class="btn btn-primary" style="width: 100%;">ログイン</button>
@@ -909,8 +910,9 @@ class App {
     try {
         window.store = store; // デバッグしやすいように window にもアタッチ
         await store.init(); // データをサーバーから取得
-        window.app = new App();
-        window.app.route(); // 初期ルーティングを手動で実行
+        app = new App();
+        window.app = app; // グローバルからもアクセス可能にする
+        app.route(); // 初期ルーティングを手動で実行
     } catch (globalErr) {
         console.error('[GlobalInit] Failed to initialize the application:', globalErr);
 
