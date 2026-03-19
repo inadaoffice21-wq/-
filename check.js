@@ -9,7 +9,7 @@ const puppeteer = require('puppeteer');
         page.on('pageerror', err => console.log('PAGE ERROR:', err.toString()));
         
         console.log('Navigating to local index.html...');
-        await page.goto('file:///C:/Users/inada/.gemini/antigravity/scratch/time-tracking-pro/index.html', {waitUntil: 'networkidle0'});
+        await page.goto('file:///C:/Users/inada/.gemini/antigravity/scratch/time-tracking-pro/time-tracking-pro/index.html', {waitUntil: 'networkidle0'});
         
         console.log('Waiting slightly to allow rendering...');
         await new Promise(r => setTimeout(r, 2000));
