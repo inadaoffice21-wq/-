@@ -212,7 +212,6 @@ class Store {
             delete this.state.currentUser.password;
             // LocalStorage にユーザー情報を保存（パスワードは除外済み）
             localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
-            this._save();
             return true;
         }
         return false;
@@ -244,7 +243,6 @@ class Store {
     logout() {
         this.state.currentUser = null;
         localStorage.removeItem('tt_pro_user');
-        this._save();
     }
 
     getCurrentUser() {
