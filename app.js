@@ -228,7 +228,16 @@ class Store {
         const id = 'u' + Date.now();
         const newUser = { id, name, email, password, role: 'user' };
         await this._save(`users/${id}`, newUser);
-        this.state.users.push(newUser);
+        
+        // ローカルステートを更新し、即座にログイン状態にする（同期遅延対策）
+        if (!this.state.users.find(u => u.id === id)) {
+            this.state.users.push(newUser);
+        }
+        
+        this.state.currentUser = { ...newUser };
+        delete this.state.currentUser.password;
+        localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
+
         this._notifyListeners();
         return { success: true, user: newUser };
     }
@@ -350,9 +359,8 @@ const Views = {
                     const name = container.querySelector('#name').value;
                     const res = await store.register(name, email, password);
                     if (res.success) {
-                        if (store.login(email, password)) {
-                            app.navigate('/');
-                        }
+                        // register内でログイン処理も完了しているため、そのまま遷移
+                        app.navigate('/');
                     } else {
                         authError.textContent = res.message;
                         authError.style.display = 'block';
