@@ -39,15 +39,7 @@ class Store {
             activeTimer: {}
         };
 
-        let backup = null;
-        try {
-            const data = localStorage.getItem('tt_pro_backup');
-            if (data) backup = JSON.parse(data);
-        } catch (e) {
-            console.error('[Store] Backup load error:', e);
-        }
-
-        this.state = backup || { ...this.initialState };
+        this.state = { ...this.initialState };
         this.listeners = [];
         this.savedUser = null;
 
@@ -63,20 +55,17 @@ class Store {
         console.log('[Store] Initializing...');
         await this._loadFromFirebase();
         
+        // Restore session
         if (this.savedUser && !this.state.currentUser) {
-            console.log('[Store] Attempting to restore user session:', this.savedUser.id);
             const user = this.state.users.find(u => u.id === this.savedUser.id);
             if (user) {
                 this.state.currentUser = { ...user };
                 delete this.state.currentUser.password;
-                console.log('[Store] User session restored.');
-            } else {
-                console.warn('[Store] Saved user not found in current user list.');
+                console.log('[Store] User session restored:', user.email);
             }
         }
         
         this._setupRealtimeSync();
-        this._backupToLocal();
     }
 
     _setupRealtimeSync() {
@@ -86,7 +75,8 @@ class Store {
         nodes.forEach(node => {
             db.ref(`tt_pro/${node}`).on('value', (snapshot) => {
                 const data = snapshot.val();
-                console.log(`[Store] Realtime update from node: ${node}`);
+                console.log(`[Store] Sync: ${node} updated.`);
+                
                 if (data) {
                     let processedData = data;
                     if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
@@ -95,21 +85,26 @@ class Store {
                             id: data[key].id || key
                         }));
                     }
-                    
                     this.state[node] = processedData;
-                    
-                    if (this.state.currentUser) {
-                        const allTimers = (node === 'activeTimer' ? data : this.state.activeTimer) || {};
-                        this.state.activeTimerForUser = allTimers[this.state.currentUser.id] || null;
+                } else {
+                    // Node is null (empty) in Firebase
+                    if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
+                        this.state[node] = [];
+                        // Fallback for essential nodes to prevent lockout
+                        if (node === 'users' && this.state.users.length === 0) {
+                            this.state.users = [...this.initialState.users];
+                        }
+                    } else {
+                        this.state[node] = {};
                     }
-
-                    this._backupToLocal();
-                    this._notifyListeners();
-                } else if (node === 'activeTimer') {
-                    this.state.activeTimer = {};
-                    this.state.activeTimerForUser = null;
-                    this._notifyListeners();
                 }
+                
+                if (this.state.currentUser) {
+                    const allTimers = (node === 'activeTimer' ? (data || {}) : this.state.activeTimer);
+                    this.state.activeTimerForUser = allTimers[this.state.currentUser.id] || null;
+                }
+
+                this._notifyListeners();
             });
         });
     }
@@ -135,30 +130,35 @@ class Store {
             
             const remoteData = snapshot.val();
             if (remoteData) {
-                Object.keys(remoteData).forEach(node => {
-                    if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
-                        this.state[node] = Object.keys(remoteData[node]).map(key => ({
-                            ...remoteData[node][key],
-                            id: remoteData[node][key].id || key
-                        }));
-                    } else {
-                        this.state[node] = remoteData[node];
+                Object.keys(this.initialState).forEach(node => {
+                    if (remoteData[node]) {
+                        if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
+                            this.state[node] = Object.keys(remoteData[node]).map(key => ({
+                                ...remoteData[node][key],
+                                id: remoteData[node][key].id || key
+                            }));
+                        } else {
+                            this.state[node] = remoteData[node];
+                        }
                     }
                 });
-                console.log('[Store] Full load from Firebase success.');
+                console.log('[Store] Firebase data merged.');
+            } else {
+                console.log('[Store] Firebase is empty. Initializing with defaults...');
+                const uploadData = {};
+                Object.keys(this.initialState).forEach(key => {
+                    if (Array.isArray(this.initialState[key])) {
+                        const obj = {};
+                        this.initialState[key].forEach(item => { if(item.id) obj[item.id] = item; });
+                        uploadData[key] = obj;
+                    } else {
+                        uploadData[key] = this.initialState[key];
+                    }
+                });
+                await db.ref('tt_pro').set(uploadData);
             }
         } catch (e) {
-            console.warn('[Store] Firebase initial load failed or timed out. Falling back to local data.', e);
-        }
-    }
-
-    _backupToLocal() {
-        try {
-            const backupState = { ...this.state };
-            delete backupState.currentUser;
-            localStorage.setItem('tt_pro_backup', JSON.stringify(backupState));
-        } catch (e) {
-            console.error('[Store] Local backup failed:', e);
+            console.warn('[Store] Initial load error/timeout. Using local/cached state.');
         }
     }
 
@@ -167,29 +167,25 @@ class Store {
         try {
             await db.ref(`tt_pro/${path}`).set(data);
         } catch (e) {
-            console.error(`[Firebase] Save failed at ${path}:`, e);
+            console.error(`[Firebase] Save error:`, e);
+            throw e;
         }
     }
 
     login(email, password) {
-        console.log('[Store] Login attempt for:', email);
         const user = this.state.users.find(u => u.email === email && u.password === password);
         if (user) {
             this.state.currentUser = { ...user };
             delete this.state.currentUser.password;
             localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
-            console.log('[Store] Login success.');
             return true;
         }
-        console.warn('[Store] Login failed: User not found or password mismatch.');
         return false;
     }
 
     logout() {
-        console.log('[Store] Logout.');
         this.state.currentUser = null;
         localStorage.removeItem('tt_pro_user');
-        localStorage.removeItem('tt_pro_backup');
         location.reload();
     }
 
@@ -201,7 +197,6 @@ class Store {
         const id = 'tm_' + Date.now();
         const newEntry = { id, createdAt: new Date().toISOString(), status: 'draft', ...entry };
         await this._save(`timeEntries/${id}`, newEntry);
-        this.logAction('CREATE_ENTRY', `Entry added: ${id}`);
     }
 
     async deleteTimeEntry(id) {
@@ -223,21 +218,16 @@ class Store {
     }
 
     async register(name, email, password) {
-        console.log('[Store] Registration attempt for:', email);
         if (this.state.users.find(u => u.email === email)) {
             return { success: false, message: 'このメールアドレスは既に登録されています。' };
         }
         const id = 'u' + Date.now();
         const newUser = { id, name, email, password, role: 'user' };
-        
-        // Save to Firebase
         await this._save(`users/${id}`, newUser);
         
-        // Critical: Update local state immediately to allow instant login
+        // Immediate local reflect
         this.state.users.push(newUser);
         this._notifyListeners();
-        
-        console.log('[Store] Registration success.');
         return { success: true, user: newUser };
     }
 
@@ -248,12 +238,6 @@ class Store {
             return true;
         }
         return false;
-    }
-
-    async logAction(action, details) {
-        const id = 'log_' + Date.now();
-        const log = { id, userId: this.state.currentUser?.id || 'system', timestamp: new Date().toISOString(), action, details };
-        await this._save(`auditLogs/${id}`, log);
     }
 }
 
@@ -338,12 +322,8 @@ const Views = {
                     const name = container.querySelector('#name').value;
                     const res = await store.register(name, email, password);
                     if (res.success) {
-                        // Registration success, try login immediately
                         if (store.login(email, password)) {
                             app.navigate('/');
-                        } else {
-                            authError.textContent = '登録は成功しましたが、ログインに失敗しました。再試行してください。';
-                            authError.style.display = 'block';
                         }
                     } else {
                         authError.textContent = res.message;
@@ -369,7 +349,6 @@ const Views = {
                 <nav class="navbar glass">
                     <h1 class="brand">TimeTracking Pro</h1>
                     <div style="display: flex; align-items: center; gap: 1rem;">
-                        <button class="btn" id="pw-change-btn" style="background: rgba(16, 185, 129, 0.1); color: var(--success); font-size: 0.875rem;">PW変更</button>
                         <span>${user.name}さん</span>
                         <button class="btn" id="logout-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">ログアウト</button>
                     </div>
@@ -424,11 +403,6 @@ const Views = {
             `;
 
             container.querySelector('#logout-btn').onclick = () => store.logout();
-            container.querySelector('#pw-change-btn').onclick = () => {
-                const nw = prompt('新パスワード');
-                if(nw) store.updatePassword(user.id, nw).then(() => alert('変更しました'));
-            };
-
             container.querySelector('#time-entry-form').onsubmit = async (e) => {
                 e.preventDefault();
                 const f = e.target;
@@ -437,7 +411,6 @@ const Views = {
             };
 
             container.querySelectorAll('.delete-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteTimeEntry(b.dataset.id));
-            
             container.querySelectorAll('.edit-btn').forEach(b => b.onclick = () => {
                 const e = store.state.timeEntries.find(entry => entry.id === b.dataset.id);
                 const nh = prompt('時間', e.hours);
@@ -474,8 +447,6 @@ const Views = {
                     if (hours >= 0.5) {
                         const desc = prompt('作業内容を入力', store.state.workContents[0]?.name);
                         if(desc) await store.addTimeEntry({ userId: user.id, projectId: container.querySelector('#project-id').value, hours, description: desc });
-                    } else if (hours > 0) {
-                        alert('0.5h未満のため記録されませんでした');
                     }
                 } else {
                     await store._save(`activeTimer/${user.id}`, { userId: user.id, startTime: Date.now() });
@@ -508,14 +479,13 @@ const Views = {
                 <div style="display: flex; gap: 1rem; margin-bottom: 2rem;">
                     <button class="btn ${activeTab === 'approvals' ? 'btn-primary' : ''}" id="tab-appr">承認待ち</button>
                     <button class="btn ${activeTab === 'settings' ? 'btn-primary' : ''}" id="tab-sett">設定管理</button>
-                    <button class="btn" id="export-csv">CSV出力</button>
                 </div>
                 ${activeTab === 'approvals' ? `
                     <div class="glass card" style="padding:1.5rem;">
                         <h2>承認待ちリスト (${pending.length})</h2>
                         <table class="data-table">
                             <thead><tr><th>User</th><th>PJ</th><th>Time</th><th>Action</th></tr></thead>
-                            <tbody>${pending.length === 0 ? '<tr><td colspan="4" style="text-align:center; padding:2rem;">待機データなし</td></tr>' : pending.map(e => `
+                            <tbody>${pending.map(e => `
                                 <tr>
                                     <td>${store.state.users.find(u => u.id === e.userId)?.name || '?'}</td>
                                     <td>${store.state.projects.find(p => p.id === e.projectId)?.name || '?'}</td>
@@ -529,11 +499,11 @@ const Views = {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
                         <div class="glass card" style="padding:1.5rem;">
                             <h2>Projects <button id="add-pj" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.projects.map(p => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}">x</button></div>`).join('')}
+                            ${store.state.projects.map(p => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}" class="btn" style="padding:2px 6px;">x</button></div>`).join('')}
                         </div>
                         <div class="glass card" style="padding:1.5rem;">
                             <h2>Work Types <button id="add-wt" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.workContents.map(w => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}">x</button></div>`).join('')}
+                            ${store.state.workContents.map(w => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}" class="btn" style="padding:2px 6px;">x</button></div>`).join('')}
                         </div>
                     </div>
                 `}
@@ -542,25 +512,20 @@ const Views = {
             container.querySelector('#logout-btn').onclick = () => store.logout();
             container.querySelector('#tab-appr').onclick = () => { activeTab = 'approvals'; render(); };
             container.querySelector('#tab-sett').onclick = () => { activeTab = 'settings'; render(); };
-            container.querySelector('#export-csv').onclick = () => {
-                const header = 'User,Project,Hours,Description,Status\n';
-                const rows = store.state.timeEntries.map(e => `"${store.state.users.find(u => u.id === e.userId)?.name}",${store.state.projects.find(p => p.id === e.projectId)?.name},${e.hours},"${e.description}",${e.status}`).join('\n');
-                const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([header + rows], { type: 'text/csv' })); link.download = 'timetracking.csv'; link.click();
-            };
 
-            if(activeTab === 'approvals') {
-                container.querySelectorAll('.approve-btn').forEach(b => b.onclick = () => store.updateTimeEntry(b.dataset.id, { status: 'approved' }));
-            } else {
-                container.querySelector('#add-pj').onclick = () => {
+            if(activeTab === 'settings') {
+                container.querySelector('#add-pj').onclick = async () => {
                     const n = prompt('Project Name'); 
-                    if(n) { const id = 'p'+Date.now(); store._save(`projects/${id}`, { id, name: n, status: 'active' }); }
+                    if(n) { const id = 'p'+Date.now(); await store._save(`projects/${id}`, { id, name: n, status: 'active' }); }
                 };
-                container.querySelector('#add-wt').onclick = () => {
+                container.querySelector('#add-wt').onclick = async () => {
                     const n = prompt('Work Name');
-                    if(n) { const id = 'w'+Date.now(); store._save(`workContents/${id}`, { id, name: n }); }
+                    if(n) { const id = 'w'+Date.now(); await store._save(`workContents/${id}`, { id, name: n }); }
                 };
-                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store._save(`projects/${b.dataset.id}`, null));
-                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store._save(`workContents/${b.dataset.id}`, null));
+                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = async () => confirm('削除しますか？') && await store._save(`projects/${b.dataset.id}`, null));
+                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = async () => confirm('削除しますか？') && await store._save(`workContents/${b.dataset.id}`, null));
+            } else {
+                container.querySelectorAll('.approve-btn').forEach(b => b.onclick = async () => await store.updateTimeEntry(b.dataset.id, { status: 'approved' }));
             }
         };
 
@@ -581,20 +546,13 @@ class App {
         const loader = document.getElementById('initial-loader');
         if (loader) loader.style.display = 'none';
 
-        if (this.unsubscribe) {
-            console.log('[App] Unsubscribing previous view.');
-            this.unsubscribe();
-            this.unsubscribe = null;
-        }
+        if (this.unsubscribe) this.unsubscribe();
 
         const user = store.getCurrentUser();
         let path = window.location.hash.replace(/^#/, '') || '/';
         if (!path.startsWith('/')) path = '/' + path;
 
-        console.log('[App] Routing path:', path, 'Authenticated:', !!user);
-
         if (!user && path !== '/login') {
-            console.log('[App] Redirecting to /login');
             this.navigate('/login');
             return;
         }
@@ -613,11 +571,7 @@ class App {
         }
 
         if (viewResult.update) {
-            console.log('[App] Subscribing new view to store updates.');
-            this.unsubscribe = store.subscribe(() => {
-                console.log('[App] Store changed, updating view.');
-                viewResult.update();
-            });
+            this.unsubscribe = store.subscribe(() => viewResult.update());
         }
 
         this.appElement.innerHTML = '';
@@ -631,14 +585,8 @@ class App {
 
 // --- Init ---
 (async function() {
-    try {
-        await store.init();
-        app = new App();
-        window.app = app;
-        app.route();
-    } catch (e) {
-        console.error('[Critical] App initialization failed:', e);
-        const appDiv = document.getElementById('app');
-        if (appDiv) appDiv.innerHTML = '<div style="padding:2rem; color:red;">エラーが発生しました。リロードしてください。</div>';
-    }
+    await store.init();
+    app = new App();
+    window.app = app;
+    app.route();
 })();
