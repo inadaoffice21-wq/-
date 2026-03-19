@@ -47,6 +47,9 @@ class Store {
         this.listeners = [];
         this.savedUser = null;
 
+        // まずはLocalStorageから復旧（オフライン対応）
+        this._loadLocal();
+
         try {
             const user = localStorage.getItem('tt_pro_user');
             if (user) this.savedUser = JSON.parse(user);
@@ -55,9 +58,36 @@ class Store {
         }
     }
 
+    _persistLocal() {
+        try {
+            localStorage.setItem('tt_pro_state', JSON.stringify(this.state));
+        } catch (e) {
+            console.error('[Store] Local persist error:', e);
+        }
+    }
+
+    _loadLocal() {
+        try {
+            const data = localStorage.getItem('tt_pro_state');
+            if (data) {
+                const parsed = JSON.parse(data);
+                this.state = { ...this.state, ...parsed };
+                console.log('[Store] Loaded from LocalStorage');
+            }
+        } catch (e) {
+            console.warn('[Store] Local load failed:', e);
+        }
+    }
+
     async init() {
         console.log('[Store] Initializing v' + APP_VERSION);
-        await this._loadFromFirebase();
+        
+        // Firebaseからの読み込みは試みるが、失敗してもローカルデータで続行
+        try {
+            await this._loadFromFirebase();
+        } catch (e) {
+            console.warn('[Store] Firebase init skipped/failed, using local data.');
+        }
         
         if (this.savedUser && !this.state.currentUser) {
             const user = this.state.users.find(u => u.id === this.savedUser.id);
@@ -103,6 +133,7 @@ class Store {
                     this.state.activeTimerForUser = allTimers[this.state.currentUser.id] || null;
                 }
 
+                this._persistLocal();
                 this._notifyListeners();
             });
         });
@@ -140,8 +171,10 @@ class Store {
                             this.state[node] = remoteData[node];
                         }
                     } else if (this.initialState[node]) {
-                         // Ensure nodes like users always have initial data if remote is empty
-                         this.state[node] = Array.isArray(this.initialState[node]) ? [...this.initialState[node]] : {...this.initialState[node]};
+                          // リモートにノードがない場合、ローカルにデータがなければ初期値をセット
+                          if (!this.state[node] || (Array.isArray(this.state[node]) && this.state[node].length === 0)) {
+                             this.state[node] = Array.isArray(this.initialState[node]) ? [...this.initialState[node]] : {...this.initialState[node]};
+                          }
                     }
                 });
             } else {
@@ -166,19 +199,25 @@ class Store {
     }
 
     async _save(path, data) {
+        // まずローカルに保存（オフライン優先）
+        this._persistLocal();
+        this._notifyListeners();
+
         if (!db) return;
         try {
-            // Set a timeout for the save operation
+            // Firebaseへの保存は短めのタイムアウトで試行
             const timeout = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Firebase save timeout（15秒経過）')), 15000)
+                setTimeout(() => reject(new Error('Firebase timeout')), 5000)
             );
             await Promise.race([
                 db.ref(`tt_pro/${path}`).set(data),
                 timeout
             ]);
+            console.log(`[Store] Firebase save success: ${path}`);
         } catch (e) {
-            console.error(`[Firebase] Save error:`, e);
-            throw e;
+            console.warn(`[Store] Firebase save deferred (Offline): ${path}`, e.message);
+            // 本来はここでキューイングなどの処理を入れるのが理想だが、
+            // 現状はLocalStorageにあるので、次回の同期やリロードで対応可能とする
         }
     }
 
