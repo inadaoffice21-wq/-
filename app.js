@@ -318,8 +318,12 @@ const Views = {
                             <button type="button" id="toggle-mode-btn" class="btn" style="background: none; color: var(--primary); font-size: 0.875rem; padding: 0;">新規登録はこちら</button>
                         </div>
                     </form>
-                    <div style="margin-top: 2rem; text-align: center;">
+                    <div style="margin-top: 2rem; text-align: center; display: flex; flex-direction: column; gap: 0.5rem;">
                         <button onclick="location.reload(true)" class="btn" style="font-size: 0.7rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border);">Force Reload Cache</button>
+                        <button id="reset-app-btn" class="btn" style="font-size: 0.7rem; color: var(--danger); background: transparent; border: 1px solid var(--danger);">Reset Local Data</button>
+                    </div>
+                    <div id="debug-log" style="margin-top: 1rem; padding: 0.5rem; background: rgba(0,0,0,0.2); font-family: monospace; font-size: 0.7rem; color: #aaa; border-radius: 4px; display: none; text-align: left; max-height: 100px; overflow-y: auto;">
+                        <strong>Debug Log:</strong><br>
                     </div>
                 </div>
             `;
@@ -330,6 +334,24 @@ const Views = {
             const switchBtn = container.querySelector('#toggle-mode-btn');
             const subtitle = container.querySelector('#form-subtitle');
             const authError = container.querySelector('#auth-error');
+            const debugLog = container.querySelector('#debug-log');
+            const resetBtn = container.querySelector('#reset-app-btn');
+
+            const log = (msg) => {
+                console.log('[AuthDebug]', msg);
+                debugLog.style.display = 'block';
+                const entry = document.createElement('div');
+                entry.textContent = `> ${msg}`;
+                debugLog.appendChild(entry);
+                debugLog.scrollTop = debugLog.scrollHeight;
+            };
+
+            resetBtn.onclick = () => {
+                if(confirm('ローカルストレージをクリアして初期化しますか？')) {
+                    localStorage.clear();
+                    location.reload();
+                }
+            };
 
             let isLoginMode = true;
 
@@ -351,6 +373,7 @@ const Views = {
 
             form.onsubmit = async (e) => {
                 e.preventDefault();
+                log('Form submitted. Mode: ' + (isLoginMode ? 'Login' : 'Register'));
                 authError.style.display = 'none';
                 const email = container.querySelector('#email').value.trim();
                 const password = container.querySelector('#password').value;
@@ -359,12 +382,16 @@ const Views = {
                 const originalBtnText = submitBtn.textContent;
                 submitBtn.disabled = true;
                 submitBtn.textContent = '処理中...';
+                log('Starting process...');
 
                 try {
                     if (isLoginMode) {
+                        log('Attempting login for: ' + email);
                         if (store.login(email, password)) {
+                            log('Login successful. Navigating...');
                             app.navigate('/');
                         } else {
+                            log('Login failed: Invalid credentials.');
                             authError.textContent = 'メールアドレスまたはパスワードが正しくありません。';
                             authError.style.display = 'block';
                             submitBtn.disabled = false;
@@ -372,7 +399,9 @@ const Views = {
                         }
                     } else {
                         const name = container.querySelector('#name').value.trim();
+                        log('Attempting register for: ' + email);
                         if (!name) {
+                            log('Register failed: Name is empty.');
                             authError.textContent = '名前を入力してください。';
                             authError.style.display = 'block';
                             submitBtn.disabled = false;
@@ -381,7 +410,9 @@ const Views = {
                         }
                         
                         const res = await store.register(name, email, password);
+                        log('Register result: ' + (res.success ? 'Success' : 'Failed - ' + res.message));
                         if (res.success) {
+                            log('Navigating to dashboard...');
                             app.navigate('/');
                         } else {
                             authError.textContent = res.message;
@@ -391,6 +422,7 @@ const Views = {
                         }
                     }
                 } catch (err) {
+                    log('CRITICAL ERROR: ' + (err.message || err));
                     console.error('Auth action error:', err);
                     authError.textContent = 'エラーが発生しました: ' + (err.message || err);
                     authError.style.display = 'block';
