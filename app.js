@@ -21,7 +21,7 @@ try {
         firebase.initializeApp(firebaseConfig);
         db = firebase.database();
     } else {
-        console.warn('[Firebase] Config is missing. Please set firebaseConfig.');
+        console.warn('[Firebase] Config is missing.');
     }
 } catch (e) {
     console.error('[Firebase] Initialization error:', e);
@@ -36,10 +36,9 @@ class Store {
             workContents: [{ id: 'w_default', name: '通常作業' }],
             timeEntries: [],
             auditLogs: [],
-            activeTimer: {} // userId -> timerData
+            activeTimer: {}
         };
 
-        // Load local backup
         let backup = null;
         try {
             const data = localStorage.getItem('tt_pro_backup');
@@ -65,10 +64,14 @@ class Store {
         await this._loadFromFirebase();
         
         if (this.savedUser && !this.state.currentUser) {
+            console.log('[Store] Attempting to restore user session:', this.savedUser.id);
             const user = this.state.users.find(u => u.id === this.savedUser.id);
             if (user) {
                 this.state.currentUser = { ...user };
                 delete this.state.currentUser.password;
+                console.log('[Store] User session restored.');
+            } else {
+                console.warn('[Store] Saved user not found in current user list.');
             }
         }
         
@@ -83,6 +86,7 @@ class Store {
         nodes.forEach(node => {
             db.ref(`tt_pro/${node}`).on('value', (snapshot) => {
                 const data = snapshot.val();
+                console.log(`[Store] Realtime update from node: ${node}`);
                 if (data) {
                     let processedData = data;
                     if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
@@ -94,9 +98,8 @@ class Store {
                     
                     this.state[node] = processedData;
                     
-                    // Specific handling for current user's active timer
                     if (this.state.currentUser) {
-                        const allTimers = this.state.activeTimer || {};
+                        const allTimers = (node === 'activeTimer' ? data : this.state.activeTimer) || {};
                         this.state.activeTimerForUser = allTimers[this.state.currentUser.id] || null;
                     }
 
@@ -142,23 +145,10 @@ class Store {
                         this.state[node] = remoteData[node];
                     }
                 });
-            } else {
-                // Initialize remote
-                const uploadData = {};
-                Object.keys(this.initialState).forEach(key => {
-                    if (Array.isArray(this.initialState[key])) {
-                        const obj = {};
-                        this.initialState[key].forEach(item => { if(item.id) obj[item.id] = item; });
-                        uploadData[key] = obj;
-                    } else {
-                        uploadData[key] = this.initialState[key];
-                    }
-                });
-                await db.ref('tt_pro').set(uploadData);
+                console.log('[Store] Full load from Firebase success.');
             }
-            this._notifyListeners();
         } catch (e) {
-            console.warn('[Store] Firebase load failed', e);
+            console.warn('[Store] Firebase initial load failed or timed out. Falling back to local data.', e);
         }
     }
 
@@ -182,18 +172,21 @@ class Store {
     }
 
     login(email, password) {
+        console.log('[Store] Login attempt for:', email);
         const user = this.state.users.find(u => u.email === email && u.password === password);
         if (user) {
             this.state.currentUser = { ...user };
             delete this.state.currentUser.password;
             localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
-            this._loadFromFirebase();
+            console.log('[Store] Login success.');
             return true;
         }
+        console.warn('[Store] Login failed: User not found or password mismatch.');
         return false;
     }
 
     logout() {
+        console.log('[Store] Logout.');
         this.state.currentUser = null;
         localStorage.removeItem('tt_pro_user');
         localStorage.removeItem('tt_pro_backup');
@@ -206,12 +199,7 @@ class Store {
 
     async addTimeEntry(entry) {
         const id = 'tm_' + Date.now();
-        const newEntry = {
-            id,
-            createdAt: new Date().toISOString(),
-            status: 'draft',
-            ...entry
-        };
+        const newEntry = { id, createdAt: new Date().toISOString(), status: 'draft', ...entry };
         await this._save(`timeEntries/${id}`, newEntry);
         this.logAction('CREATE_ENTRY', `Entry added: ${id}`);
     }
@@ -221,7 +209,6 @@ class Store {
         if (entry) {
             if (entry.status === 'approved' || entry.status === 'submitted') return false;
             await this._save(`timeEntries/${id}`, null);
-            this.logAction('DELETE_ENTRY', `Entry deleted: ${id}`);
             return true;
         }
         return false;
@@ -232,17 +219,25 @@ class Store {
         if (entry) {
             const updated = { ...entry, ...updates, updatedAt: new Date().toISOString() };
             await this._save(`timeEntries/${id}`, updated);
-            this.logAction('UPDATE_ENTRY', `Entry updated: ${id}`);
         }
     }
 
     async register(name, email, password) {
+        console.log('[Store] Registration attempt for:', email);
         if (this.state.users.find(u => u.email === email)) {
             return { success: false, message: 'このメールアドレスは既に登録されています。' };
         }
         const id = 'u' + Date.now();
         const newUser = { id, name, email, password, role: 'user' };
+        
+        // Save to Firebase
         await this._save(`users/${id}`, newUser);
+        
+        // Critical: Update local state immediately to allow instant login
+        this.state.users.push(newUser);
+        this._notifyListeners();
+        
+        console.log('[Store] Registration success.');
         return { success: true, user: newUser };
     }
 
@@ -257,13 +252,7 @@ class Store {
 
     async logAction(action, details) {
         const id = 'log_' + Date.now();
-        const log = {
-            id,
-            userId: this.state.currentUser?.id || 'system',
-            timestamp: new Date().toISOString(),
-            action,
-            details
-        };
+        const log = { id, userId: this.state.currentUser?.id || 'system', timestamp: new Date().toISOString(), action, details };
         await this._save(`auditLogs/${id}`, log);
     }
 }
@@ -316,7 +305,7 @@ const Views = {
 
             let isLoginMode = true;
 
-            switchBtn.addEventListener('click', () => {
+            switchBtn.onclick = () => {
                 isLoginMode = !isLoginMode;
                 authError.style.display = 'none';
                 if (isLoginMode) {
@@ -330,9 +319,9 @@ const Views = {
                     switchBtn.textContent = 'ログイン画面に戻る';
                     subtitle.textContent = '新しいアカウントを作成します';
                 }
-            });
+            };
 
-            form.addEventListener('submit', async (e) => {
+            form.onsubmit = async (e) => {
                 e.preventDefault();
                 authError.style.display = 'none';
                 const email = container.querySelector('#email').value;
@@ -349,14 +338,19 @@ const Views = {
                     const name = container.querySelector('#name').value;
                     const res = await store.register(name, email, password);
                     if (res.success) {
-                        store.login(email, password);
-                        app.navigate('/');
+                        // Registration success, try login immediately
+                        if (store.login(email, password)) {
+                            app.navigate('/');
+                        } else {
+                            authError.textContent = '登録は成功しましたが、ログインに失敗しました。再試行してください。';
+                            authError.style.display = 'block';
+                        }
                     } else {
                         authError.textContent = res.message;
                         authError.style.display = 'block';
                     }
                 }
-            });
+            };
         };
         
         render();
@@ -435,10 +429,11 @@ const Views = {
                 if(nw) store.updatePassword(user.id, nw).then(() => alert('変更しました'));
             };
 
-            container.querySelector('#time-entry-form').onsubmit = (e) => {
+            container.querySelector('#time-entry-form').onsubmit = async (e) => {
                 e.preventDefault();
                 const f = e.target;
-                store.addTimeEntry({ userId: user.id, projectId: f['project-id'].value, hours: parseFloat(f.hours.value), description: f.description.value });
+                await store.addTimeEntry({ userId: user.id, projectId: f['project-id'].value, hours: parseFloat(f.hours.value), description: f.description.value });
+                f.hours.value = '';
             };
 
             container.querySelectorAll('.delete-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteTimeEntry(b.dataset.id));
@@ -457,7 +452,7 @@ const Views = {
                     tDisp.textContent = '00:00:00';
                     tBtn.textContent = '開始';
                     tBtn.style.background = '';
-                    if (timerInterval) clearInterval(timerInterval);
+                    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
                     return;
                 }
                 const diff = Date.now() - store.state.activeTimerForUser.startTime;
@@ -471,19 +466,19 @@ const Views = {
             };
             updateTimerDisp();
 
-            tBtn.onclick = () => {
+            tBtn.onclick = async () => {
                 if (store.state.activeTimerForUser) {
                     const st = store.state.activeTimerForUser.startTime;
-                    store._save(`activeTimer/${user.id}`, null);
+                    await store._save(`activeTimer/${user.id}`, null);
                     const hours = Math.round(((Date.now() - st) / 3600000) * 2) / 2;
                     if (hours >= 0.5) {
                         const desc = prompt('作業内容を入力', store.state.workContents[0]?.name);
-                        if(desc) store.addTimeEntry({ userId: user.id, projectId: container.querySelector('#project-id').value, hours, description: desc });
-                    } else {
+                        if(desc) await store.addTimeEntry({ userId: user.id, projectId: container.querySelector('#project-id').value, hours, description: desc });
+                    } else if (hours > 0) {
                         alert('0.5h未満のため記録されませんでした');
                     }
                 } else {
-                    store._save(`activeTimer/${user.id}`, { userId: user.id, startTime: Date.now() });
+                    await store._save(`activeTimer/${user.id}`, { userId: user.id, startTime: Date.now() });
                 }
             };
         };
@@ -513,13 +508,14 @@ const Views = {
                 <div style="display: flex; gap: 1rem; margin-bottom: 2rem;">
                     <button class="btn ${activeTab === 'approvals' ? 'btn-primary' : ''}" id="tab-appr">承認待ち</button>
                     <button class="btn ${activeTab === 'settings' ? 'btn-primary' : ''}" id="tab-sett">設定管理</button>
+                    <button class="btn" id="export-csv">CSV出力</button>
                 </div>
                 ${activeTab === 'approvals' ? `
                     <div class="glass card" style="padding:1.5rem;">
                         <h2>承認待ちリスト (${pending.length})</h2>
                         <table class="data-table">
                             <thead><tr><th>User</th><th>PJ</th><th>Time</th><th>Action</th></tr></thead>
-                            <tbody>${pending.map(e => `
+                            <tbody>${pending.length === 0 ? '<tr><td colspan="4" style="text-align:center; padding:2rem;">待機データなし</td></tr>' : pending.map(e => `
                                 <tr>
                                     <td>${store.state.users.find(u => u.id === e.userId)?.name || '?'}</td>
                                     <td>${store.state.projects.find(p => p.id === e.projectId)?.name || '?'}</td>
@@ -546,6 +542,11 @@ const Views = {
             container.querySelector('#logout-btn').onclick = () => store.logout();
             container.querySelector('#tab-appr').onclick = () => { activeTab = 'approvals'; render(); };
             container.querySelector('#tab-sett').onclick = () => { activeTab = 'settings'; render(); };
+            container.querySelector('#export-csv').onclick = () => {
+                const header = 'User,Project,Hours,Description,Status\n';
+                const rows = store.state.timeEntries.map(e => `"${store.state.users.find(u => u.id === e.userId)?.name}",${store.state.projects.find(p => p.id === e.projectId)?.name},${e.hours},"${e.description}",${e.status}`).join('\n');
+                const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([header + rows], { type: 'text/csv' })); link.download = 'timetracking.csv'; link.click();
+            };
 
             if(activeTab === 'approvals') {
                 container.querySelectorAll('.approve-btn').forEach(b => b.onclick = () => store.updateTimeEntry(b.dataset.id, { status: 'approved' }));
@@ -558,8 +559,8 @@ const Views = {
                     const n = prompt('Work Name');
                     if(n) { const id = 'w'+Date.now(); store._save(`workContents/${id}`, { id, name: n }); }
                 };
-                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => store._save(`projects/${b.dataset.id}`, null));
-                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => store._save(`workContents/${b.dataset.id}`, null));
+                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store._save(`projects/${b.dataset.id}`, null));
+                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store._save(`workContents/${b.dataset.id}`, null));
             }
         };
 
@@ -580,13 +581,20 @@ class App {
         const loader = document.getElementById('initial-loader');
         if (loader) loader.style.display = 'none';
 
-        if (this.unsubscribe) this.unsubscribe();
+        if (this.unsubscribe) {
+            console.log('[App] Unsubscribing previous view.');
+            this.unsubscribe();
+            this.unsubscribe = null;
+        }
 
         const user = store.getCurrentUser();
         let path = window.location.hash.replace(/^#/, '') || '/';
         if (!path.startsWith('/')) path = '/' + path;
 
+        console.log('[App] Routing path:', path, 'Authenticated:', !!user);
+
         if (!user && path !== '/login') {
+            console.log('[App] Redirecting to /login');
             this.navigate('/login');
             return;
         }
@@ -605,7 +613,11 @@ class App {
         }
 
         if (viewResult.update) {
-            this.unsubscribe = store.subscribe(() => viewResult.update());
+            console.log('[App] Subscribing new view to store updates.');
+            this.unsubscribe = store.subscribe(() => {
+                console.log('[App] Store changed, updating view.');
+                viewResult.update();
+            });
         }
 
         this.appElement.innerHTML = '';
@@ -619,8 +631,14 @@ class App {
 
 // --- Init ---
 (async function() {
-    await store.init();
-    app = new App();
-    window.app = app;
-    app.route();
+    try {
+        await store.init();
+        app = new App();
+        window.app = app;
+        app.route();
+    } catch (e) {
+        console.error('[Critical] App initialization failed:', e);
+        const appDiv = document.getElementById('app');
+        if (appDiv) appDiv.innerHTML = '<div style="padding:2rem; color:red;">エラーが発生しました。リロードしてください。</div>';
+    }
 })();
