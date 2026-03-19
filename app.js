@@ -1,5 +1,6 @@
-// TimeTracking Pro - v2.1 (2026-03-19)
+// TimeTracking Pro - v2.1.0 (2026-03-19)
 const APP_VERSION = "2.1.0";
+const IS_PRO_UPDATE = true; // Visual flag for the new update
 
 // --- Environment Check ---
 const isRawGitHub = window.location.hostname.includes('raw.githubusercontent.com');
@@ -244,7 +245,7 @@ const Views = {
                     <div style="text-align: center; margin-bottom: 2rem;">
                         <h1 class="brand">TimeTracking Pro</h1>
                         <p id="form-subtitle" style="color: var(--text-secondary);">ログインして工数を管理しましょう</p>
-                        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 5px;">Version ${APP_VERSION}</div>
+                        <div style="font-size: 0.75rem; color: var(--primary); margin-top: 5px; font-weight: 600;">v${APP_VERSION} <span class="badge">New!</span></div>
                     </div>
                     <form id="auth-form">
                         <div id="name-group" class="input-group" style="display: none;">
@@ -266,7 +267,7 @@ const Views = {
                         </div>
                     </form>
                     <div style="margin-top: 2rem; text-align: center;">
-                        <button onclick="location.reload(true)" class="btn" style="font-size: 0.7rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border);">Force Reload Cash</button>
+                        <button onclick="location.reload(true)" class="btn" style="font-size: 0.7rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border);">Force Reload Cache</button>
                     </div>
                 </div>
             `;

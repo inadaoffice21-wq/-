@@ -195,6 +195,26 @@ body {
     border-radius: 1.25rem;
 }
 
+/* New specifically for v2.1.0 */
+.badge {
+    background: var(--primary);
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    margin-left: 4px;
+    vertical-align: middle;
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; transform: scale(1.05); }
+    100% { opacity: 0.8; }
+}
+
 .brand {
     font-family: var(--font-heading);
     font-size: 1.75rem;
@@ -204,4 +224,5 @@ body {
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
+    text-shadow: 0 10px 20px rgba(0,0,0,0.2);
 }
