@@ -168,7 +168,14 @@ class Store {
     async _save(path, data) {
         if (!db) return;
         try {
-            await db.ref(`tt_pro/${path}`).set(data);
+            // Set a timeout for the save operation
+            const timeout = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Firebase save timeout（15秒経過）')), 15000)
+            );
+            await Promise.race([
+                db.ref(`tt_pro/${path}`).set(data),
+                timeout
+            ]);
         } catch (e) {
             console.error(`[Firebase] Save error:`, e);
             throw e;
@@ -345,26 +352,50 @@ const Views = {
             form.onsubmit = async (e) => {
                 e.preventDefault();
                 authError.style.display = 'none';
-                const email = container.querySelector('#email').value;
+                const email = container.querySelector('#email').value.trim();
                 const password = container.querySelector('#password').value;
                 
-                if (isLoginMode) {
-                    if (store.login(email, password)) {
-                        app.navigate('/');
+                // Show loading state
+                const originalBtnText = submitBtn.textContent;
+                submitBtn.disabled = true;
+                submitBtn.textContent = '処理中...';
+
+                try {
+                    if (isLoginMode) {
+                        if (store.login(email, password)) {
+                            app.navigate('/');
+                        } else {
+                            authError.textContent = 'メールアドレスまたはパスワードが正しくありません。';
+                            authError.style.display = 'block';
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = originalBtnText;
+                        }
                     } else {
-                        authError.textContent = 'メールアドレスまたはパスワードが正しくありません。';
-                        authError.style.display = 'block';
+                        const name = container.querySelector('#name').value.trim();
+                        if (!name) {
+                            authError.textContent = '名前を入力してください。';
+                            authError.style.display = 'block';
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = originalBtnText;
+                            return;
+                        }
+                        
+                        const res = await store.register(name, email, password);
+                        if (res.success) {
+                            app.navigate('/');
+                        } else {
+                            authError.textContent = res.message;
+                            authError.style.display = 'block';
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = originalBtnText;
+                        }
                     }
-                } else {
-                    const name = container.querySelector('#name').value;
-                    const res = await store.register(name, email, password);
-                    if (res.success) {
-                        // register内でログイン処理も完了しているため、そのまま遷移
-                        app.navigate('/');
-                    } else {
-                        authError.textContent = res.message;
-                        authError.style.display = 'block';
-                    }
+                } catch (err) {
+                    console.error('Auth action error:', err);
+                    authError.textContent = 'エラーが発生しました: ' + (err.message || err);
+                    authError.style.display = 'block';
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalBtnText;
                 }
             };
         };
