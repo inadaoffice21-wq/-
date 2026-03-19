@@ -29,12 +29,32 @@ try {
 }
 
 // --- Store (Data Management) ---
+// --- Store (Data Management) ---
 class Store {
     constructor() {
-        this.state = null; // Will be initialized by init()
+        // デフォルトの初期状態
+        this.initialState = {
+            users: [{ id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }],
+            projects: [{ id: 'p_default', name: '一般業務', status: 'active' }],
+            workContents: [{ id: 'w_default', name: '通常作業' }],
+            timeEntries: [],
+            auditLogs: [],
+            activeTimer: null
+        };
+
+        // ローカルストレージからバックアップを試行
+        let backup = null;
+        try {
+            const data = localStorage.getItem('tt_pro_backup');
+            if (data) backup = JSON.parse(data);
+        } catch (e) {
+            console.error('[Store] Backup load error:', e);
+        }
+
+        this.state = backup || { ...this.initialState };
         this.listeners = [];
-        // 持続的なログイン状態を localStorage から復元
         this.savedUser = null;
+
         try {
             const user = localStorage.getItem('tt_pro_user');
             if (user) this.savedUser = JSON.parse(user);
@@ -44,28 +64,56 @@ class Store {
     }
 
     async init() {
-        this.state = await this._load();
-        // localStorage から復元されたユーザーがあれば state にセット
-        if (this.savedUser && this.state && !this.state.currentUser) {
-            this.state.currentUser = this.savedUser;
+        console.log('[Store] Initializing...');
+        await this._loadFromFirebase();
+        
+        // ログイン状態の復元
+        if (this.savedUser && !this.state.currentUser) {
+            const user = this.state.users.find(u => u.id === this.savedUser.id);
+            if (user) {
+                this.state.currentUser = { ...user };
+                delete this.state.currentUser.password;
+            }
         }
+        
         this._setupRealtimeSync();
+        this._backupToLocal();
     }
 
     _setupRealtimeSync() {
         if (!db) return;
-        const ref = db.ref('tt_pro_data');
-        ref.on('value', (snapshot) => {
-            const data = snapshot.val();
-            if (data) {
-                const currentUser = this.state && this.state.currentUser ? this.state.currentUser : null;
-                this.state = { ...this.state, ...data };
-                // currentUser is strictly local/session state, ensure it doesn't get overwritten by remote sync if we're changing login states
-                if (currentUser) {
-                    this.state.currentUser = currentUser;
+        
+        // 各データノードを監視
+        const nodes = ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs', 'activeTimer'];
+        nodes.forEach(node => {
+            db.ref(`tt_pro/${node}`).on('value', (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    // Firebaseはオブジェクト形式で保存されるため、必要に応じて配列に変換
+                    let processedData = data;
+                    if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
+                        processedData = Object.keys(data).map(key => ({
+                            ...data[key],
+                            id: data[key].id || key // idがない場合はキーを使用
+                        }));
+                    }
+                    
+                    this.state[node] = processedData;
+                    
+                    // activeTimer の場合は現在のユーザー用を特別に抽出する
+                    if (node === 'activeTimer' && this.state.currentUser) {
+                        const myTimer = data[this.state.currentUser.id];
+                        if (myTimer) {
+                            this.state.activeTimerForUser = myTimer;
+                        } else {
+                            this.state.activeTimerForUser = null;
+                        }
+                    }
+
+                    this._backupToLocal();
+                    this._notifyListeners();
                 }
-                this._notifyListeners();
-            }
+            });
         });
     }
 
@@ -77,96 +125,66 @@ class Store {
         this.listeners.forEach(listener => listener(this.state));
     }
 
-    // _checkStorageAvailable() and _checkPersistence() removed since we use Firebase
-
-    async _load() {
-        console.log('[Store] Loading state from Firebase...');
-        const initialState = {
-            users: [
-                { id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }
-            ],
-            projects: [
-                { id: 'p_default', name: '一般業務', status: 'active' }
-            ],
-            workContents: [
-                { id: 'w_default', name: '通常作業' }
-            ],
-            timeEntries: [],
-            auditLogs: [],
-            activeTimer: null
-        };
-
-        const localState = {
-            currentUser: null,
-            ...initialState
-        };
-
-        if (!db) {
-            console.error('[Store] Firebase DB is not initialized. Using fallback local state.');
-            return localState;
-        }
-
+    async _loadFromFirebase() {
+        if (!db) return;
+        console.log('[Store] Fetching from Firebase...');
         try {
-            // Promise.race to enforce a 5-second timeout for the initial load
             const snapshot = await Promise.race([
-                db.ref('tt_pro_data').once('value'),
-                new Promise((resolve, reject) => setTimeout(() => reject(new Error('Firebase connection timeout')), 5000))
+                db.ref('tt_pro').once('value'),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
             ]);
             
-            let state = snapshot.val();
-            
-            if (!state || typeof state !== 'object') {
-                console.log('[Store] No remote state found, initializing remote with default data.');
-                // ユーザーが既にログインしている場合は、新規リモートデータにも currentUser を含めない
-                const uploadState = { ...initialState };
-                db.ref('tt_pro_data').set(uploadState).catch(e => console.error('Silent set error:', e));
-                return localState;
+            const remoteData = snapshot.val();
+            if (remoteData) {
+                // 配列に変換しつつマージ
+                Object.keys(remoteData).forEach(node => {
+                    if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
+                        this.state[node] = Object.keys(remoteData[node]).map(key => ({
+                            ...remoteData[node][key],
+                            id: remoteData[node][key].id || key
+                        }));
+                    } else {
+                        this.state[node] = remoteData[node];
+                    }
+                });
+                console.log('[Store] Remote data loaded.');
+            } else {
+                // 初期データをFirebaseにアップロード（マイグレーション用）
+                console.log('[Store] Initializing remote storage...');
+                const uploadData = {};
+                Object.keys(this.initialState).forEach(key => {
+                    if (Array.isArray(this.initialState[key])) {
+                        const obj = {};
+                        this.initialState[key].forEach(item => { obj[item.id] = item; });
+                        uploadData[key] = obj;
+                    } else {
+                        uploadData[key] = this.initialState[key];
+                    }
+                });
+                await db.ref('tt_pro').set(uploadData);
             }
-
-            // ローカルで保持しているセッション (currentUser) を優先しつつ、リモートデータをマージ
-            const mergedState = { ...state, currentUser: this.state?.currentUser || localState.currentUser };
-            
-            ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].forEach(key => {
-                if (!Array.isArray(mergedState[key])) {
-                    mergedState[key] = initialState[key];
-                }
-            });
-
-            // If empty, supply defaults so the app doesn't break
-            if (mergedState.projects.length === 0) {
-                mergedState.projects = initialState.projects;
-            }
-            if (mergedState.workContents.length === 0) {
-                mergedState.workContents = initialState.workContents;
-            }
-
-            console.log('[Store] State loaded successfully from Firebase.');
-            return mergedState;
         } catch (e) {
-            console.error('[Store] Fatal error while fetching state from Firebase:', e);
-            // ローダーを非表示にする（エラーでフォールバックするため）
-            const loader = document.getElementById('initial-loader');
-            if (loader) loader.style.display = 'none';
-            return localState;
+            console.warn('[Store] Firebase load failed, using local backup/initial state.', e);
         }
     }
 
-    _pruneOldData(state) {
-        // データ永続化のため、自動削除機能は無効化されました。
-        return state;
+    _backupToLocal() {
+        try {
+            const backupState = { ...this.state };
+            delete backupState.currentUser;
+            localStorage.setItem('tt_pro_backup', JSON.stringify(backupState));
+        } catch (e) {
+            console.error('[Store] Local backup failed:', e);
+        }
     }
 
-    async _save() {
+    async _save(path, data) {
+        this._backupToLocal();
         if (!db) return;
         try {
-            // Remove currentUser before saving to DB, as it's local session state
-            const stateToSave = { ...this.state };
-            delete stateToSave.currentUser;
-
-            await db.ref('tt_pro_data').set(stateToSave);
+            await db.ref(`tt_pro/${path}`).set(data);
         } catch (e) {
-            console.error('Failed to save to Firebase:', e);
-            alert('データの保存に失敗しました。インターネット接続を確認してください。');
+            console.error(`[Firebase] Save failed at ${path}:`, e);
         }
     }
 
@@ -181,25 +199,34 @@ class Store {
         URL.revokeObjectURL(url);
     }
 
-    importData(file) {
+    async importData(file) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = (e) => {
+            reader.onload = async (e) => {
                 try {
                     const imported = JSON.parse(e.target.result);
                     if (imported && typeof imported === 'object') {
-                        // データのマージではなく上書き（破壊的だが確実）
                         if (confirm('現在のデータが上書きされます。よろしいですか？')) {
-                            this.state = { ...this.state, ...imported };
-                            this._save();
+                            // Firebase全体を更新
+                            const uploadData = {};
+                            Object.keys(imported).forEach(key => {
+                                if (Array.isArray(imported[key])) {
+                                    const obj = {};
+                                    imported[key].forEach(item => {
+                                        const id = item.id || (Date.now() + Math.random().toString(36).substr(2, 9));
+                                        obj[id] = { ...item, id };
+                                    });
+                                    uploadData[key] = obj;
+                                } else {
+                                    uploadData[key] = imported[key];
+                                }
+                            });
+                            await db.ref('tt_pro').set(uploadData);
+                            location.reload();
                             resolve(true);
-                        } else {
-                            resolve(false);
-                        }
+                        } else { resolve(false); }
                     }
-                } catch (err) {
-                    reject('ファイル形式が正しくありません。');
-                }
+                } catch (err) { reject('ファイル形式が正しくありません。'); }
             };
             reader.readAsText(file);
         });
@@ -210,31 +237,29 @@ class Store {
         if (user) {
             this.state.currentUser = { ...user };
             delete this.state.currentUser.password;
-            // LocalStorage にユーザー情報を保存（パスワードは除外済み）
             localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
             return true;
         }
         return false;
     }
 
-    register(name, email, password) {
+    async register(name, email, password) {
         if (this.state.users.find(u => u.email === email)) {
             return { success: false, message: 'このメールアドレスは既に登録されています。' };
         }
-        const newUser = { id: 'u' + Date.now(), name, email, password, role: 'user' };
-        this.state.users.push(newUser);
+        const id = 'u' + Date.now();
+        const newUser = { id, name, email, password, role: 'user' };
+        
+        await this._save(`users/${id}`, newUser);
         this.logAction('REGISTER_USER', `Registered: ${email}`);
-        this._save();
-        // 登録直後にログインする場合は login() 内で localStorage 保存される
         return { success: true, user: newUser };
     }
 
-    updatePassword(userId, newPassword) {
+    async updatePassword(userId, newPassword) {
         const user = this.state.users.find(u => u.id === userId);
         if (user) {
-            user.password = newPassword;
+            await this._save(`users/${userId}/password`, newPassword);
             this.logAction('UPDATE_PASSWORD', `User: ${user.email}`);
-            this._save();
             return true;
         }
         return false;
@@ -249,53 +274,50 @@ class Store {
         return this.state && this.state.currentUser ? this.state.currentUser : null;
     }
 
-    addTimeEntry(entry) {
+    async addTimeEntry(entry) {
+        const id = 'tm_' + Date.now();
         const newEntry = {
-            id: 'tm_' + Date.now(),
+            id,
             createdAt: new Date().toISOString(),
             status: 'draft',
             ...entry
         };
-        this.state.timeEntries.push(newEntry);
-        this.logAction('CREATE_ENTRY', `Entry added: ${newEntry.id}`);
-        this._save();
+        await this._save(`timeEntries/${id}`, newEntry);
+        this.logAction('CREATE_ENTRY', `Entry added: ${id}`);
         return newEntry;
     }
 
-    deleteTimeEntry(id) {
-        const index = this.state.timeEntries.findIndex(e => e.id === id);
-        if (index !== -1) {
-            const entry = this.state.timeEntries[index];
-            if (entry.status === 'approved' || entry.status === 'submitted') {
-                return false;
-            }
-            this.state.timeEntries.splice(index, 1);
+    async deleteTimeEntry(id) {
+        const entry = this.state.timeEntries.find(e => e.id === id);
+        if (entry) {
+            if (entry.status === 'approved' || entry.status === 'submitted') return false;
+            // nullをセットすることでFirebase上のデータを削除
+            await this._save(`timeEntries/${id}`, null);
             this.logAction('DELETE_ENTRY', `Entry deleted: ${id}`);
-            this._save();
             return true;
         }
         return false;
     }
 
-    updateTimeEntry(id, updates) {
-        const index = this.state.timeEntries.findIndex(e => e.id === id);
-        if (index !== -1) {
-            this.state.timeEntries[index] = { ...this.state.timeEntries[index], ...updates, updatedAt: new Date().toISOString() };
+    async updateTimeEntry(id, updates) {
+        const entry = this.state.timeEntries.find(e => e.id === id);
+        if (entry) {
+            const updated = { ...entry, ...updates, updatedAt: new Date().toISOString() };
+            await this._save(`timeEntries/${id}`, updated);
             this.logAction('UPDATE_ENTRY', `Entry updated: ${id}`);
-            this._save();
         }
     }
 
-    logAction(action, details) {
+    async logAction(action, details) {
+        const id = 'log_' + Date.now();
         const log = {
-            id: 'log_' + Date.now(),
+            id,
             userId: this.state.currentUser?.id || 'system',
             timestamp: new Date().toISOString(),
             action,
             details
         };
-        this.state.auditLogs.unshift(log);
-        this._save();
+        await this._save(`auditLogs/${id}`, log);
     }
 }
 
@@ -472,8 +494,8 @@ const Views = {
                         <div class="glass" style="padding: 2rem; text-align: center;">
                             <h3 style="margin-bottom: 1.5rem; color: var(--text-secondary);">リアルタイム計測</h3>
                             <div id="timer-display" style="font-size: 3rem; font-family: var(--font-heading); font-weight: 700; margin-bottom: 1.5rem;">
-                                ${store.state.activeTimer && store.state.activeTimer.userId === user.id ? (() => {
-                    const diff = Date.now() - store.state.activeTimer.startTime;
+                                ${store.state.activeTimerForUser ? (() => {
+                    const diff = Date.now() - store.state.activeTimerForUser.startTime;
                     const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
                     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
                 })() : '00:00:00'}
@@ -570,21 +592,22 @@ const Views = {
             }
 
             trackerBtn.addEventListener('click', () => {
-                const isActive = store.state.activeTimer && store.state.activeTimer.userId === user.id;
+                const isActive = !!store.state.activeTimerForUser;
                 if (!isActive) {
-                    store.state.activeTimer = { userId: user.id, startTime: Date.now() };
-                    store._save();
+                    const timerData = { userId: user.id, startTime: Date.now() };
+                    store.state.activeTimerForUser = timerData;
+                    store._save(`activeTimer/${user.id}`, timerData);
                     trackerBtn.textContent = '停止'; trackerBtn.style.backgroundColor = 'var(--danger)';
                     if (timerInterval) clearInterval(timerInterval);
                     timerInterval = setInterval(() => {
-                        const diff = Date.now() - store.state.activeTimer.startTime;
+                        const diff = Date.now() - store.state.activeTimerForUser.startTime;
                         const h = Math.floor(diff / 3600000); const m = Math.floor((diff % 3600000) / 60000); const s = Math.floor((diff % 60000) / 1000);
                         timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
                     }, 1000);
                 } else {
-                    const st = store.state.activeTimer.startTime;
-                    store.state.activeTimer = null;
-                    store._save();
+                    const st = store.state.activeTimerForUser.startTime;
+                    store.state.activeTimerForUser = null;
+                    store._save(`activeTimer/${user.id}`, null);
                     if (timerInterval) clearInterval(timerInterval);
                     const hours = Math.round(((Date.now() - st) / 3600000) * 2) / 2;
                     if (hours >= 0.5) {
@@ -692,7 +715,15 @@ const Views = {
                     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([header + rows], { type: 'text/csv' })); link.download = 'export.csv'; link.click();
                 });
                 container.querySelector('#add-project-btn').addEventListener('click', () => {
-                    const n = prompt('プロジェクト名'); if (n) { store.state.projects.push({ id: 'p' + Date.now(), name: n, status: 'active' }); store.logAction('CREATE_PROJECT', n); store._save(); render(); }
+                    const n = prompt('プロジェクト名'); 
+                    if (n) { 
+                        const id = 'p' + Date.now();
+                        const proj = { id, name: n, status: 'active' };
+                        store.state.projects.push(proj); 
+                        store.logAction('CREATE_PROJECT', n); 
+                        store._save(`projects/${id}`, proj); 
+                        render(); 
+                    }
                 });
             } else if (activeTab === 'members') {
                 container.querySelectorAll('.admin-pw-change-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -727,23 +758,43 @@ const Views = {
                 });
             } else if (activeTab === 'settings') {
                 container.querySelector('#add-proj-settings-btn').addEventListener('click', () => {
-                    const n = prompt('新規プロジェクト名'); if (n) { store.state.projects.push({ id: 'p' + Date.now(), name: n, status: 'active' }); store.logAction('CREATE_PROJECT', n); store._save(); render(); }
+                    const n = prompt('新規プロジェクト名'); 
+                    if (n) { 
+                        const id = 'p' + Date.now();
+                        const proj = { id, name: n, status: 'active' };
+                        store.state.projects.push(proj); 
+                        store.logAction('CREATE_PROJECT', n); 
+                        store._save(`projects/${id}`, proj); 
+                        render(); 
+                    }
                 });
                 container.querySelectorAll('.delete-proj-btn').forEach(btn => btn.addEventListener('click', () => {
                     if (confirm('このプロジェクトを削除しますか？')) {
-                        store.state.projects = store.state.projects.filter(p => p.id !== btn.dataset.id);
-                        store.logAction('DELETE_PROJECT', btn.dataset.id);
-                        store._save(); render();
+                        const id = btn.dataset.id;
+                        store.state.projects = store.state.projects.filter(p => p.id !== id);
+                        store.logAction('DELETE_PROJECT', id);
+                        store._save(`projects/${id}`, null); 
+                        render();
                     }
                 }));
                 container.querySelector('#add-content-settings-btn').addEventListener('click', () => {
-                    const n = prompt('新規作業内容'); if (n) { store.state.workContents.push({ id: 'w' + Date.now(), name: n }); store.logAction('CREATE_CONTENT', n); store._save(); render(); }
+                    const n = prompt('新規作業内容'); 
+                    if (n) { 
+                        const id = 'w' + Date.now();
+                        const content = { id, name: n };
+                        store.state.workContents.push(content); 
+                        store.logAction('CREATE_CONTENT', n); 
+                        store._save(`workContents/${id}`, content); 
+                        render(); 
+                    }
                 });
                 container.querySelectorAll('.delete-content-btn').forEach(btn => btn.addEventListener('click', () => {
                     if (confirm('この作業内容を削除しますか？')) {
-                        store.state.workContents = store.state.workContents.filter(w => w.id !== btn.dataset.id);
-                        store.logAction('DELETE_CONTENT', btn.dataset.id);
-                        store._save(); render();
+                        const id = btn.dataset.id;
+                        store.state.workContents = store.state.workContents.filter(w => w.id !== id);
+                        store.logAction('DELETE_CONTENT', id);
+                        store._save(`workContents/${id}`, null); 
+                        render();
                     }
                 }));
             }
