@@ -124,7 +124,7 @@ class Store {
         try {
             const snapshot = await Promise.race([
                 db.ref('tt_pro').once('value'),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
             ]);
             
             const remoteData = snapshot.val();
@@ -139,10 +139,13 @@ class Store {
                         } else {
                             this.state[node] = remoteData[node];
                         }
+                    } else if (this.initialState[node]) {
+                         // Ensure nodes like users always have initial data if remote is empty
+                         this.state[node] = Array.isArray(this.initialState[node]) ? [...this.initialState[node]] : {...this.initialState[node]};
                     }
                 });
             } else {
-                // Initial upload
+                console.log('[Store] No remote data, uploading initial state.');
                 const uploadData = {};
                 Object.keys(this.initialState).forEach(key => {
                     if (Array.isArray(this.initialState[key])) {
@@ -154,9 +157,11 @@ class Store {
                     }
                 });
                 await db.ref('tt_pro').set(uploadData);
+                this.state = { ...this.initialState, users: [...this.initialState.users] };
             }
         } catch (e) {
-            console.warn('[Store] Initial load error/timeout.');
+            console.warn('[Store] Initial load error/timeout. Using offline state.');
+            this.state = { ...this.initialState, users: [...this.initialState.users] };
         }
     }
 
@@ -226,6 +231,37 @@ class Store {
         this.state.users.push(newUser);
         this._notifyListeners();
         return { success: true, user: newUser };
+    }
+
+    // --- Master Data Management ---
+    async addProject(name) {
+        const id = 'p' + Date.now();
+        const newProject = { id, name, status: 'active' };
+        this.state.projects.push(newProject);
+        this._notifyListeners();
+        this._save(`projects/${id}`, newProject).catch(() => {});
+    }
+
+    async deleteProject(id) {
+        if (this.state.projects.length <= 1) return alert('最後のプロジェクトは削除できません。');
+        this.state.projects = this.state.projects.filter(p => p.id !== id);
+        this._notifyListeners();
+        this._save(`projects/${id}`, null).catch(() => {});
+    }
+
+    async addWorkType(name) {
+        const id = 'w' + Date.now();
+        const newWorkType = { id, name };
+        this.state.workContents.push(newWorkType);
+        this._notifyListeners();
+        this._save(`workContents/${id}`, newWorkType).catch(() => {});
+    }
+
+    async deleteWorkType(id) {
+        if (this.state.workContents.length <= 1) return alert('最後の作業内容は削除できません。');
+        this.state.workContents = this.state.workContents.filter(w => w.id !== id);
+        this._notifyListeners();
+        this._save(`workContents/${id}`, null).catch(() => {});
     }
 }
 
@@ -383,6 +419,42 @@ const Views = {
                                 </table>
                             </div>
                         </div>
+
+                        <div class="glass card" style="padding: 1.5rem;">
+                            <h2 style="margin-bottom: 1rem;">マスタ管理</h2>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                                <div>
+                                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">プロジェクト</h3>
+                                    <div class="master-list">
+                                        ${store.state.projects.map(p => `
+                                            <div class="master-item">
+                                                <span>${p.name}</span>
+                                                <button class="delete-pj-btn" data-id="${p.id}">x</button>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                                        <input type="text" id="new-pj-name" class="input-field" style="padding: 0.4rem;" placeholder="新プロジェクト">
+                                        <button id="add-pj-btn" class="btn btn-primary" style="padding: 0.4rem 0.8rem;">+</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">作業内容</h3>
+                                    <div class="master-list">
+                                        ${store.state.workContents.map(w => `
+                                            <div class="master-item">
+                                                <span>${w.name}</span>
+                                                <button class="delete-wt-btn" data-id="${w.id}">x</button>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                    <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                                        <input type="text" id="new-wt-name" class="input-field" style="padding: 0.4rem;" placeholder="新作業内容">
+                                        <button id="add-wt-btn" class="btn btn-primary" style="padding: 0.4rem 0.8rem;">+</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div>
                         <div class="glass card timer-card" style="padding: 2rem; text-align: center;">
@@ -409,6 +481,18 @@ const Views = {
                 const nd = prompt('内容', e.description);
                 if(nh && nd) store.updateTimeEntry(e.id, { hours: parseFloat(nh), description: nd });
             });
+
+            // Master data management events
+            container.querySelector('#add-pj-btn').onclick = async () => {
+                const input = container.querySelector('#new-pj-name');
+                if (input.value) { store.addProject(input.value); input.value = ''; }
+            };
+            container.querySelector('#add-wt-btn').onclick = async () => {
+                const input = container.querySelector('#new-wt-name');
+                if (input.value) { store.addWorkType(input.value); input.value = ''; }
+            };
+            container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteProject(b.dataset.id));
+            container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteWorkType(b.dataset.id));
 
             const tBtn = container.querySelector('#tracker-btn');
             const tDisp = container.querySelector('#timer-display');
@@ -490,12 +574,24 @@ const Views = {
                 ` : `
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
                         <div class="glass card" style="padding:1.5rem;">
-                            <h2>Projects <button id="add-pj" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.projects.map(p => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}" style="padding:2px 6px; font-size:0.7rem;">x</button></div>`).join('')}
+                            <h2>Projects</h2>
+                            <div class="master-list" style="margin-top:1rem;">
+                                ${store.state.projects.map(p => `<div class="master-item"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}">x</button></div>`).join('')}
+                            </div>
+                            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                                <input type="text" id="admin-new-pj" class="input-field" placeholder="新プロジェクト">
+                                <button id="admin-add-pj" class="btn btn-primary">+</button>
+                            </div>
                         </div>
                         <div class="glass card" style="padding:1.5rem;">
-                            <h2>Work Types <button id="add-wt" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.workContents.map(w => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}" style="padding:2px 6px; font-size:0.7rem;">x</button></div>`).join('')}
+                            <h2>Work Types</h2>
+                             <div class="master-list" style="margin-top:1rem;">
+                                ${store.state.workContents.map(w => `<div class="master-item"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}">x</button></div>`).join('')}
+                            </div>
+                            <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+                                <input type="text" id="admin-new-wt" class="input-field" placeholder="新作業内容">
+                                <button id="admin-add-wt" class="btn btn-primary">+</button>
+                            </div>
                         </div>
                     </div>
                 `}
@@ -506,16 +602,16 @@ const Views = {
             container.querySelector('#tab-sett').onclick = () => { activeTab = 'settings'; render(); };
 
             if(activeTab === 'settings') {
-                container.querySelector('#add-pj').onclick = async () => {
-                    const n = prompt('Project Name'); 
-                    if(n) { const id = 'p'+Date.now(); await store._save(`projects/${id}`, { id, name: n, status: 'active' }); }
+                container.querySelector('#admin-add-pj').onclick = async () => {
+                    const input = container.querySelector('#admin-new-pj');
+                    if(input.value) { store.addProject(input.value); input.value = ''; }
                 };
-                container.querySelector('#add-wt').onclick = async () => {
-                    const n = prompt('Work Name');
-                    if(n) { const id = 'w'+Date.now(); await store._save(`workContents/${id}`, { id, name: n }); }
+                container.querySelector('#admin-add-wt').onclick = async () => {
+                    const input = container.querySelector('#admin-new-wt');
+                    if(input.value) { store.addWorkType(input.value); input.value = ''; }
                 };
-                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = async () => confirm('削除しますか？') && await store._save(`projects/${b.dataset.id}`, null));
-                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = async () => confirm('削除しますか？') && await store._save(`workContents/${b.dataset.id}`, null));
+                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteProject(b.dataset.id));
+                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteWorkType(b.dataset.id));
             } else {
                 container.querySelectorAll('.approve-btn').forEach(b => b.onclick = async () => await store.updateTimeEntry(b.dataset.id, { status: 'approved' }));
             }
