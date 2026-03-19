@@ -1,3 +1,6 @@
+// TimeTracking Pro - v2.1 (2026-03-19)
+const APP_VERSION = "2.1.0";
+
 // --- Environment Check ---
 const isRawGitHub = window.location.hostname.includes('raw.githubusercontent.com');
 if (isRawGitHub) {
@@ -52,10 +55,9 @@ class Store {
     }
 
     async init() {
-        console.log('[Store] Initializing...');
+        console.log('[Store] Initializing v' + APP_VERSION);
         await this._loadFromFirebase();
         
-        // Restore session
         if (this.savedUser && !this.state.currentUser) {
             const user = this.state.users.find(u => u.id === this.savedUser.id);
             if (user) {
@@ -87,13 +89,9 @@ class Store {
                     }
                     this.state[node] = processedData;
                 } else {
-                    // Node is null (empty) in Firebase
                     if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
                         this.state[node] = [];
-                        // Fallback for essential nodes to prevent lockout
-                        if (node === 'users' && this.state.users.length === 0) {
-                            this.state.users = [...this.initialState.users];
-                        }
+                        if (node === 'users') this.state.users = [...this.initialState.users];
                     } else {
                         this.state[node] = {};
                     }
@@ -142,9 +140,8 @@ class Store {
                         }
                     }
                 });
-                console.log('[Store] Firebase data merged.');
             } else {
-                console.log('[Store] Firebase is empty. Initializing with defaults...');
+                // Initial upload
                 const uploadData = {};
                 Object.keys(this.initialState).forEach(key => {
                     if (Array.isArray(this.initialState[key])) {
@@ -158,7 +155,7 @@ class Store {
                 await db.ref('tt_pro').set(uploadData);
             }
         } catch (e) {
-            console.warn('[Store] Initial load error/timeout. Using local/cached state.');
+            console.warn('[Store] Initial load error/timeout.');
         }
     }
 
@@ -186,6 +183,7 @@ class Store {
     logout() {
         this.state.currentUser = null;
         localStorage.removeItem('tt_pro_user');
+        localStorage.removeItem('tt_pro_backup');
         location.reload();
     }
 
@@ -224,20 +222,9 @@ class Store {
         const id = 'u' + Date.now();
         const newUser = { id, name, email, password, role: 'user' };
         await this._save(`users/${id}`, newUser);
-        
-        // Immediate local reflect
         this.state.users.push(newUser);
         this._notifyListeners();
         return { success: true, user: newUser };
-    }
-
-    async updatePassword(userId, newPassword) {
-        const user = this.state.users.find(u => u.id === userId);
-        if (user) {
-            await this._save(`users/${userId}/password`, newPassword);
-            return true;
-        }
-        return false;
     }
 }
 
@@ -257,6 +244,7 @@ const Views = {
                     <div style="text-align: center; margin-bottom: 2rem;">
                         <h1 class="brand">TimeTracking Pro</h1>
                         <p id="form-subtitle" style="color: var(--text-secondary);">ログインして工数を管理しましょう</p>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 5px;">Version ${APP_VERSION}</div>
                     </div>
                     <form id="auth-form">
                         <div id="name-group" class="input-group" style="display: none;">
@@ -277,6 +265,9 @@ const Views = {
                             <button type="button" id="toggle-mode-btn" class="btn" style="background: none; color: var(--primary); font-size: 0.875rem; padding: 0;">新規登録はこちら</button>
                         </div>
                     </form>
+                    <div style="margin-top: 2rem; text-align: center;">
+                        <button onclick="location.reload(true)" class="btn" style="font-size: 0.7rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border);">Force Reload Cash</button>
+                    </div>
                 </div>
             `;
             
@@ -347,7 +338,7 @@ const Views = {
             const entries = store.state.timeEntries.filter(e => e.userId === user.id);
             container.innerHTML = `
                 <nav class="navbar glass">
-                    <h1 class="brand">TimeTracking Pro</h1>
+                    <h1 class="brand">TimeTracking Pro <span style="font-size: 0.7rem; opacity: 0.5;">v${APP_VERSION}</span></h1>
                     <div style="display: flex; align-items: center; gap: 1rem;">
                         <span>${user.name}さん</span>
                         <button class="btn" id="logout-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);">ログアウト</button>
@@ -470,7 +461,7 @@ const Views = {
 
             container.innerHTML = `
                 <nav class="navbar glass">
-                    <h1 class="brand">Admin Panel</h1>
+                    <h1 class="brand">Admin Panel <span style="font-size: 0.7rem; opacity: 0.5;">v${APP_VERSION}</span></h1>
                     <div style="display: flex; gap: 1rem; align-items:center;">
                         <span>${user.name}</span>
                         <button class="btn" id="logout-btn" style="color:var(--danger);">Logout</button>
@@ -499,11 +490,11 @@ const Views = {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
                         <div class="glass card" style="padding:1.5rem;">
                             <h2>Projects <button id="add-pj" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.projects.map(p => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}" class="btn" style="padding:2px 6px;">x</button></div>`).join('')}
+                            ${store.state.projects.map(p => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${p.name}</span> <button class="delete-pj-btn" data-id="${p.id}" style="padding:2px 6px; font-size:0.7rem;">x</button></div>`).join('')}
                         </div>
                         <div class="glass card" style="padding:1.5rem;">
                             <h2>Work Types <button id="add-wt" class="btn" style="padding:0.25rem 0.5rem;">+</button></h2>
-                            ${store.state.workContents.map(w => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}" class="btn" style="padding:2px 6px;">x</button></div>`).join('')}
+                            ${store.state.workContents.map(w => `<div style="padding:0.5rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;"><span>${w.name}</span> <button class="delete-wt-btn" data-id="${w.id}" style="padding:2px 6px; font-size:0.7rem;">x</button></div>`).join('')}
                         </div>
                     </div>
                 `}
