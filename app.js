@@ -32,10 +32,13 @@ try {
 }
 
 // --- Store (Data Management) ---
+function simpleHash(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+}
 class Store {
     constructor() {
         this.initialState = {
-            users: [{ id: 'admin', name: '管理者', email: 'admin@example.com', password: 'password', role: 'admin' }],
+            users: [{ id: 'admin', name: '管理者', email: 'admin@example.com', password: 'cGFzc3dvcmQ=', role: 'admin' }],
             projects: [{ id: 'p_default', name: '一般業務', status: 'active' }],
             workContents: [{ id: 'w_default', name: '通常作業' }],
             timeEntries: [],
@@ -57,6 +60,7 @@ class Store {
             console.error('LocalStorage load error:', e);
         }
     }
+
 
     _persistLocal() {
         try {
@@ -81,14 +85,14 @@ class Store {
 
     async init() {
         console.log('[Store] Initializing v' + APP_VERSION);
-        
+
         // Firebaseからの読み込みは試みるが、失敗してもローカルデータで続行
         try {
             await this._loadFromFirebase();
         } catch (e) {
             console.warn('[Store] Firebase init skipped/failed, using local data.');
         }
-        
+
         if (this.savedUser && !this.state.currentUser) {
             const user = this.state.users.find(u => u.id === this.savedUser.id);
             if (user) {
@@ -97,19 +101,19 @@ class Store {
                 console.log('[Store] User session restored:', user.email);
             }
         }
-        
+
         this._setupRealtimeSync();
     }
 
     _setupRealtimeSync() {
         if (!db) return;
-        
+
         const nodes = ['users', 'projects', 'workContents', 'timeEntries', 'auditLogs', 'activeTimer'];
         nodes.forEach(node => {
             db.ref(`tt_pro/${node}`).on('value', (snapshot) => {
                 const data = snapshot.val();
                 console.log(`[Store] Sync: ${node} updated.`);
-                
+
                 if (data) {
                     let processedData = data;
                     if (['users', 'projects', 'workContents', 'timeEntries', 'auditLogs'].includes(node)) {
@@ -127,7 +131,7 @@ class Store {
                         this.state[node] = {};
                     }
                 }
-                
+
                 if (this.state.currentUser) {
                     const allTimers = (node === 'activeTimer' ? (data || {}) : this.state.activeTimer);
                     this.state.activeTimerForUser = allTimers[this.state.currentUser.id] || null;
@@ -157,7 +161,7 @@ class Store {
                 db.ref('tt_pro').once('value'),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
             ]);
-            
+
             const remoteData = snapshot.val();
             if (remoteData) {
                 Object.keys(this.initialState).forEach(node => {
@@ -171,10 +175,10 @@ class Store {
                             this.state[node] = remoteData[node];
                         }
                     } else if (this.initialState[node]) {
-                          // リモートにノードがない場合、ローカルにデータがなければ初期値をセット
-                          if (!this.state[node] || (Array.isArray(this.state[node]) && this.state[node].length === 0)) {
-                             this.state[node] = Array.isArray(this.initialState[node]) ? [...this.initialState[node]] : {...this.initialState[node]};
-                          }
+                        // リモートにノードがない場合、ローカルにデータがなければ初期値をセット
+                        if (!this.state[node] || (Array.isArray(this.state[node]) && this.state[node].length === 0)) {
+                            this.state[node] = Array.isArray(this.initialState[node]) ? [...this.initialState[node]] : { ...this.initialState[node] };
+                        }
                     }
                 });
             } else {
@@ -183,7 +187,7 @@ class Store {
                 Object.keys(this.initialState).forEach(key => {
                     if (Array.isArray(this.initialState[key])) {
                         const obj = {};
-                        this.initialState[key].forEach(item => { if(item.id) obj[item.id] = item; });
+                        this.initialState[key].forEach(item => { if (item.id) obj[item.id] = item; });
                         uploadData[key] = obj;
                     } else {
                         uploadData[key] = this.initialState[key];
@@ -206,7 +210,7 @@ class Store {
         if (!db) return;
         try {
             // Firebaseへの保存は短めのタイムアウトで試行
-            const timeout = new Promise((_, reject) => 
+            const timeout = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Firebase timeout')), 5000)
             );
             await Promise.race([
@@ -222,7 +226,8 @@ class Store {
     }
 
     login(email, password) {
-        const user = this.state.users.find(u => u.email === email && u.password === password);
+        const hashed = simpleHash(password);
+        const user = this.state.users.find(u => u.email === email && u.password === hashed);
         if (user) {
             this.state.currentUser = { ...user };
             delete this.state.currentUser.password;
@@ -244,7 +249,7 @@ class Store {
     }
 
     async addTimeEntry(entry) {
-        const id = 'tm_' + Date.now();
+        const id = crypto.randomUUID();
         const newEntry = { id, createdAt: new Date().toISOString(), status: 'draft', ...entry };
         await this._save(`timeEntries/${id}`, newEntry);
     }
@@ -253,8 +258,7 @@ class Store {
         const entry = this.state.timeEntries.find(e => e.id === id);
         if (entry) {
             if (entry.status === 'approved' || entry.status === 'submitted') return false;
-            await this._save(`timeEntries/${id}`, null);
-            return true;
+            await db.ref(`tt_pro/timeEntries/${id}`).remove();
         }
         return false;
     }
@@ -267,19 +271,21 @@ class Store {
         }
     }
 
+
     async register(name, email, password) {
         if (this.state.users.find(u => u.email === email)) {
             return { success: false, message: 'このメールアドレスは既に登録されています。' };
         }
         const id = 'u' + Date.now();
-        const newUser = { id, name, email, password, role: 'user' };
+        const hashed = simpleHash(password);
+        const newUser = { id, name, email, password: hashed, role: 'user' };
         await this._save(`users/${id}`, newUser);
-        
+
         // ローカルステートを更新し、即座にログイン状態にする（同期遅延対策）
         if (!this.state.users.find(u => u.id === id)) {
             this.state.users.push(newUser);
         }
-        
+
         this.state.currentUser = { ...newUser };
         delete this.state.currentUser.password;
         localStorage.setItem('tt_pro_user', JSON.stringify(this.state.currentUser));
@@ -288,20 +294,21 @@ class Store {
         return { success: true, user: newUser };
     }
 
+
     // --- Master Data Management ---
     async addProject(name) {
         const id = 'p' + Date.now();
         const newProject = { id, name, status: 'active' };
         this.state.projects.push(newProject);
         this._notifyListeners();
-        this._save(`projects/${id}`, newProject).catch(() => {});
+        this._save(`projects/${id}`, newProject).catch(() => { });
     }
 
     async deleteProject(id) {
         if (this.state.projects.length <= 1) return alert('最後のプロジェクトは削除できません。');
         this.state.projects = this.state.projects.filter(p => p.id !== id);
         this._notifyListeners();
-        this._save(`projects/${id}`, null).catch(() => {});
+        this._save(`projects/${id}`, null).catch(() => { });
     }
 
     async addWorkType(name) {
@@ -309,14 +316,14 @@ class Store {
         const newWorkType = { id, name };
         this.state.workContents.push(newWorkType);
         this._notifyListeners();
-        this._save(`workContents/${id}`, newWorkType).catch(() => {});
+        this._save(`workContents/${id}`, newWorkType).catch(() => { });
     }
 
     async deleteWorkType(id) {
         if (this.state.workContents.length <= 1) return alert('最後の作業内容は削除できません。');
         this.state.workContents = this.state.workContents.filter(w => w.id !== id);
         this._notifyListeners();
-        this._save(`workContents/${id}`, null).catch(() => {});
+        this._save(`workContents/${id}`, null).catch(() => { });
     }
 }
 
@@ -329,7 +336,7 @@ const Views = {
         const container = document.createElement('div');
         container.className = 'container fade-in';
         container.style.cssText = 'display: flex; align-items: center; justify-content: center; min-height: 80vh;';
-        
+
         const render = () => {
             container.innerHTML = `
                 <div class="glass card" style="width: 100%; max-width: 400px; padding: 2.5rem;">
@@ -366,7 +373,7 @@ const Views = {
                     </div>
                 </div>
             `;
-            
+
             const form = container.querySelector('#auth-form');
             const nameGroup = container.querySelector('#name-group');
             const submitBtn = container.querySelector('#submit-btn');
@@ -386,7 +393,7 @@ const Views = {
             };
 
             resetBtn.onclick = () => {
-                if(confirm('ローカルストレージをクリアして初期化しますか？')) {
+                if (confirm('ローカルストレージをクリアして初期化しますか？')) {
                     localStorage.clear();
                     location.reload();
                 }
@@ -416,7 +423,7 @@ const Views = {
                 authError.style.display = 'none';
                 const email = container.querySelector('#email').value.trim();
                 const password = container.querySelector('#password').value;
-                
+
                 // Show loading state
                 const originalBtnText = submitBtn.textContent;
                 submitBtn.disabled = true;
@@ -447,7 +454,7 @@ const Views = {
                             submitBtn.textContent = originalBtnText;
                             return;
                         }
-                        
+
                         const res = await store.register(name, email, password);
                         log('Register result: ' + (res.success ? 'Success' : 'Failed - ' + res.message));
                         if (res.success) {
@@ -470,7 +477,7 @@ const Views = {
                 }
             };
         };
-        
+
         render();
         return { element: container };
     },
@@ -515,9 +522,9 @@ const Views = {
                                     <thead><tr><th>日付</th><th>PJ</th><th>時間</th><th>内容</th><th>状態</th><th>操作</th></tr></thead>
                                     <tbody>${entries.length === 0 ? '<tr><td colspan="6" style="text-align: center; padding: 2rem;">記録なし</td></tr>' : ''}
                                     ${entries.slice().reverse().map(e => {
-                                        const p = store.state.projects.find(proj => proj.id === e.projectId);
-                                        const isLocked = e.status === 'approved' || e.status === 'submitted';
-                                        return `<tr>
+                const p = store.state.projects.find(proj => proj.id === e.projectId);
+                const isLocked = e.status === 'approved' || e.status === 'submitted';
+                return `<tr>
                                             <td>${new Date(e.createdAt).toLocaleDateString()}</td>
                                             <td>${p ? p.name : '?'}</td>
                                             <td>${e.hours}h</td>
@@ -525,7 +532,7 @@ const Views = {
                                             <td><span style="color: ${e.status === 'approved' ? 'var(--success)' : 'var(--warning)'}">${e.status}</span></td>
                                             <td>${isLocked ? '' : `<button class="btn edit-btn" data-id="${e.id}" style="padding:0.25rem 0.5rem; font-size:0.75rem;">修</button> <button class="btn delete-btn" data-id="${e.id}" style="padding:0.25rem 0.5rem; font-size:0.75rem; color:var(--danger);">削</button>`}</td>
                                         </tr>`;
-                                    }).join('')}</tbody>
+            }).join('')}</tbody>
                                 </table>
                             </div>
                         </div>
@@ -589,7 +596,7 @@ const Views = {
                 const e = store.state.timeEntries.find(entry => entry.id === b.dataset.id);
                 const nh = prompt('時間', e.hours);
                 const nd = prompt('内容', e.description);
-                if(nh && nd) store.updateTimeEntry(e.id, { hours: parseFloat(nh), description: nd });
+                if (nh && nd) store.updateTimeEntry(e.id, { hours: parseFloat(nh), description: nd });
             });
 
             // Master data management events
@@ -632,7 +639,7 @@ const Views = {
                     const hours = Math.round(((Date.now() - st) / 3600000) * 2) / 2;
                     if (hours >= 0.5) {
                         const desc = prompt('作業内容を入力', store.state.workContents[0]?.name);
-                        if(desc) await store.addTimeEntry({ userId: user.id, projectId: container.querySelector('#project-id').value, hours, description: desc });
+                        if (desc) await store.addTimeEntry({ userId: user.id, projectId: container.querySelector('#project-id').value, hours, description: desc });
                     }
                 } else {
                     await store._save(`activeTimer/${user.id}`, { userId: user.id, startTime: Date.now() });
@@ -711,14 +718,14 @@ const Views = {
             container.querySelector('#tab-appr').onclick = () => { activeTab = 'approvals'; render(); };
             container.querySelector('#tab-sett').onclick = () => { activeTab = 'settings'; render(); };
 
-            if(activeTab === 'settings') {
+            if (activeTab === 'settings') {
                 container.querySelector('#admin-add-pj').onclick = async () => {
                     const input = container.querySelector('#admin-new-pj');
-                    if(input.value) { store.addProject(input.value); input.value = ''; }
+                    if (input.value) { store.addProject(input.value); input.value = ''; }
                 };
                 container.querySelector('#admin-add-wt').onclick = async () => {
                     const input = container.querySelector('#admin-new-wt');
-                    if(input.value) { store.addWorkType(input.value); input.value = ''; }
+                    if (input.value) { store.addWorkType(input.value); input.value = ''; }
                 };
                 container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteProject(b.dataset.id));
                 container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteWorkType(b.dataset.id));
@@ -782,7 +789,7 @@ class App {
 }
 
 // --- Init ---
-(async function() {
+(async function () {
     await store.init();
     app = new App();
     window.app = app;
