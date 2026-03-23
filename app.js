@@ -258,8 +258,18 @@ class Store {
         const entry = this.state.timeEntries.find(e => e.id === id);
         if (entry) {
             if (entry.status === 'approved' || entry.status === 'submitted') return false;
-            await db.ref(`tt_pro/timeEntries/${id}`).remove();
+            if (db) {
+                await db.ref('tt_pro/timeEnteries/${id}').remove();
+            }
+
+
+            if (db) {
+                await db.ref(`tt_pro/timeEntries/${id}`).remove();
+            }
+
+            return true;
         }
+
         return false;
     }
 
@@ -276,7 +286,7 @@ class Store {
         if (this.state.users.find(u => u.email === email)) {
             return { success: false, message: 'このメールアドレスは既に登録されています。' };
         }
-        const id = 'u' + Date.now();
+        const id = crypto.randomUUID();
         const hashed = simpleHash(password);
         const newUser = { id, name, email, password: hashed, role: 'user' };
         await this._save(`users/${id}`, newUser);
@@ -297,7 +307,7 @@ class Store {
 
     // --- Master Data Management ---
     async addProject(name) {
-        const id = 'p' + Date.now();
+        const id = crypto.randomUUID();
         const newProject = { id, name, status: 'active' };
         this.state.projects.push(newProject);
         this._notifyListeners();
@@ -312,7 +322,7 @@ class Store {
     }
 
     async addWorkType(name) {
-        const id = 'w' + Date.now();
+        const id = crypto.randomUUID();
         const newWorkType = { id, name };
         this.state.workContents.push(newWorkType);
         this._notifyListeners();
@@ -628,7 +638,9 @@ const Views = {
                 tDisp.textContent = `${h}:${m}:${s}`;
                 tBtn.textContent = '停止';
                 tBtn.style.background = 'var(--danger)';
-                if (!timerInterval) timerInterval = setInterval(updateTimerDisp, 1000);
+                if (!timerInterval) clearInterval(timerInterval);
+                timeInterval = setINterval(updateTimerDips, 1000);
+
             };
             updateTimerDisp();
 
