@@ -22,7 +22,9 @@ const firebaseConfig = {
 let db = null;
 try {
     if (Object.keys(firebaseConfig).length > 0) {
-        firebase.initializeApp(firebaseConfig);
+        if (!firebase.apps.legth) {
+            firebase.initializeApp(firebaseConfig);
+        }
         db = firebase.database();
     } else {
         console.warn('[Firebase] Config is missing.');
@@ -193,7 +195,8 @@ class Store {
                         uploadData[key] = this.initialState[key];
                     }
                 });
-                await db.ref('tt_pro').set(uploadData);
+                await db.ref('tt_pro/timeEnteries/${id}').remove();
+                this._notiflyListeners();
                 this.state = { ...this.initialState, users: [...this.initialState.users] };
             }
         } catch (e) {
@@ -260,11 +263,6 @@ class Store {
             if (entry.status === 'approved' || entry.status === 'submitted') return false;
             if (db) {
                 await db.ref('tt_pro/timeEnteries/${id}').remove();
-            }
-
-
-            if (db) {
-                await db.ref(`tt_pro/timeEntries/${id}`).remove();
             }
 
             return true;
@@ -631,15 +629,20 @@ const Views = {
                     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
                     return;
                 }
-                const diff = Date.now() - store.state.activeTimerForUser.startTime;
+                if (!store.state.activeTimerForUser) return;
                 const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
                 const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
                 const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
                 tDisp.textContent = `${h}:${m}:${s}`;
                 tBtn.textContent = '停止';
                 tBtn.style.background = 'var(--danger)';
-                if (!timerInterval) clearInterval(timerInterval);
-                timeInterval = setINterval(updateTimerDips, 1000);
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }
+                if (!timerInterval) {
+                    timerInterval = setInterval(updateTimerDips, 1000);
+                }
 
             };
             updateTimerDisp();
