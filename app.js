@@ -22,7 +22,7 @@ const firebaseConfig = {
 let db = null;
 try {
     if (Object.keys(firebaseConfig).length > 0) {
-        if (!firebase.apps.legth) {
+        if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
         db = firebase.database();
@@ -195,8 +195,8 @@ class Store {
                         uploadData[key] = this.initialState[key];
                     }
                 });
-                await db.ref('tt_pro/timeEnteries/${id}').remove();
-                this._notiflyListeners();
+                await db.ref('tt_pro').set(uploadData);
+                this._notifyListeners();
                 this.state = { ...this.initialState, users: [...this.initialState.users] };
             }
         } catch (e) {
@@ -262,7 +262,7 @@ class Store {
         if (entry) {
             if (entry.status === 'approved' || entry.status === 'submitted') return false;
             if (db) {
-                await db.ref('tt_pro/timeEnteries/${id}').remove();
+                await db.ref(`tt_pro/timeEntries/${id}`).remove();
             }
 
             return true;
@@ -305,6 +305,8 @@ class Store {
 
     // --- Master Data Management ---
     async addProject(name) {
+        if (this.state.currentUser.role !== 'admin') return;
+
         const id = crypto.randomUUID();
         const newProject = { id, name, status: 'active' };
         this.state.projects.push(newProject);
@@ -313,6 +315,7 @@ class Store {
     }
 
     async deleteProject(id) {
+        if (this.state.currentUser.role !== 'admin') return;
         if (this.state.projects.length <= 1) return alert('最後のプロジェクトは削除できません。');
         this.state.projects = this.state.projects.filter(p => p.id !== id);
         this._notifyListeners();
@@ -320,6 +323,7 @@ class Store {
     }
 
     async addWorkType(name) {
+        if (this.state.currentUser.role !== 'admin') return;
         const id = crypto.randomUUID();
         const newWorkType = { id, name };
         this.state.workContents.push(newWorkType);
@@ -328,6 +332,7 @@ class Store {
     }
 
     async deleteWorkType(id) {
+        if (this.state.currentUser.role !== 'admin') return;
         if (this.state.workContents.length <= 1) return alert('最後の作業内容は削除できません。');
         this.state.workContents = this.state.workContents.filter(w => w.id !== id);
         this._notifyListeners();
@@ -545,6 +550,7 @@ const Views = {
                             </div>
                         </div>
 
+                        ${user.role === 'admin' ? `
                         <div class="glass card" style="padding: 1.5rem;">
                             <h2 style="margin-bottom: 1rem;">マスタ管理</h2>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
@@ -579,7 +585,7 @@ const Views = {
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                        </div>` : ''}
                     </div>
                     <div>
                         <div class="glass card timer-card" style="padding: 2rem; text-align: center;">
@@ -608,16 +614,18 @@ const Views = {
             });
 
             // Master data management events
-            container.querySelector('#add-pj-btn').onclick = async () => {
-                const input = container.querySelector('#new-pj-name');
-                if (input.value) { store.addProject(input.value); input.value = ''; }
-            };
-            container.querySelector('#add-wt-btn').onclick = async () => {
-                const input = container.querySelector('#new-wt-name');
-                if (input.value) { store.addWorkType(input.value); input.value = ''; }
-            };
-            container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteProject(b.dataset.id));
-            container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteWorkType(b.dataset.id));
+            if (user.role === 'admin') {
+                container.querySelector('#add-pj-btn').onclick = async () => {
+                    const input = container.querySelector('#new-pj-name');
+                    if (input.value) { store.addProject(input.value); input.value = ''; }
+                };
+                container.querySelector('#add-wt-btn').onclick = async () => {
+                    const input = container.querySelector('#new-wt-name');
+                    if (input.value) { store.addWorkType(input.value); input.value = ''; }
+                };
+                container.querySelectorAll('.delete-pj-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteProject(b.dataset.id));
+                container.querySelectorAll('.delete-wt-btn').forEach(b => b.onclick = () => confirm('削除しますか？') && store.deleteWorkType(b.dataset.id));
+            }
 
             const tBtn = container.querySelector('#tracker-btn');
             const tDisp = container.querySelector('#timer-display');
@@ -629,21 +637,19 @@ const Views = {
                     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
                     return;
                 }
-                if (!store.state.activeTimerForUser) return;
+
+                const diff = Date.now() - store.state.activeTimerForUser.startTime;
+
                 const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
                 const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
                 const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
                 tDisp.textContent = `${h}:${m}:${s}`;
                 tBtn.textContent = '停止';
                 tBtn.style.background = 'var(--danger)';
-                if (timerInterval) {
-                    clearInterval(timerInterval);
-                    timerInterval = null;
-                }
+                
                 if (!timerInterval) {
-                    timerInterval = setInterval(updateTimerDips, 1000);
+                    timerInterval = setInterval(updateTimerDisp, 1000);
                 }
-
             };
             updateTimerDisp();
 
